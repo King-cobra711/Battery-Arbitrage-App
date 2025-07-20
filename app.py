@@ -258,47 +258,45 @@ def recommend_optimal_windows(df, battery_size_mw, battery_capacity_mwh, round_t
     df['hour'] = df.index.hour
     hourly_prices = df.groupby('hour')['price'].agg(['mean', 'std', 'min', 'max']).reset_index()
     
-    # Find the 4 lowest price hours for charging (2-hour blocks)
-    hourly_prices_sorted = hourly_prices.sort_values('mean')
-    
-    # Find optimal 2-hour charge blocks
+    # Find optimal 2-hour charge blocks (lowest prices)
     best_charge_blocks = []
-    for i in range(len(hourly_prices_sorted) - 1):
-        hour1 = hourly_prices_sorted.iloc[i]['hour']
-        hour2 = hourly_prices_sorted.iloc[i + 1]['hour']
-        
-        # Check if hours are consecutive
-        if (hour2 - hour1) == 1 or (hour1 == 23 and hour2 == 0):
-            avg_price = (hourly_prices_sorted.iloc[i]['mean'] + hourly_prices_sorted.iloc[i + 1]['mean']) / 2
-            best_charge_blocks.append({
-                'start_hour': min(hour1, hour2),
-                'end_hour': max(hour1, hour2),
-                'avg_price': avg_price,
-                'price_rank': i + 1
-            })
     
-    # Sort by average price (lowest first)
+    # Get all possible 2-hour consecutive blocks
+    for i in range(24):
+        hour1 = i
+        hour2 = (i + 1) % 24  # Handle wrap-around from 23 to 0
+        
+        # Get the two hours' average prices
+        price1 = hourly_prices[hourly_prices['hour'] == hour1]['mean'].iloc[0]
+        price2 = hourly_prices[hourly_prices['hour'] == hour2]['mean'].iloc[0]
+        
+        avg_price = (price1 + price2) / 2
+        
+        best_charge_blocks.append({
+            'start_hour': hour1,
+            'end_hour': hour2,
+            'avg_price': avg_price,
+            'hour1_price': price1,
+            'hour2_price': price2
+        })
+    
+    # Sort by average price (lowest first for charging)
     best_charge_blocks.sort(key=lambda x: x['avg_price'])
     
     # Find optimal 2-hour discharge blocks (highest prices)
-    hourly_prices_sorted_desc = hourly_prices.sort_values('mean', ascending=False)
-    
     best_discharge_blocks = []
-    for i in range(len(hourly_prices_sorted_desc) - 1):
-        hour1 = hourly_prices_sorted_desc.iloc[i]['hour']
-        hour2 = hourly_prices_sorted_desc.iloc[i + 1]['hour']
-        
-        # Check if hours are consecutive
-        if (hour2 - hour1) == 1 or (hour1 == 23 and hour2 == 0):
-            avg_price = (hourly_prices_sorted_desc.iloc[i]['mean'] + hourly_prices_sorted_desc.iloc[i + 1]['mean']) / 2
-            best_discharge_blocks.append({
-                'start_hour': min(hour1, hour2),
-                'end_hour': max(hour1, hour2),
-                'avg_price': avg_price,
-                'price_rank': i + 1
-            })
     
-    # Sort by average price (highest first)
+    # Use the same blocks but sort by highest price
+    for block in best_charge_blocks:
+        best_discharge_blocks.append({
+            'start_hour': block['start_hour'],
+            'end_hour': block['end_hour'],
+            'avg_price': block['avg_price'],
+            'hour1_price': block['hour1_price'],
+            'hour2_price': block['hour2_price']
+        })
+    
+    # Sort by average price (highest first for discharging)
     best_discharge_blocks.sort(key=lambda x: x['avg_price'], reverse=True)
     
     # Calculate potential arbitrage opportunities
@@ -316,8 +314,8 @@ def recommend_optimal_windows(df, battery_size_mw, battery_capacity_mwh, round_t
                     'discharge_price': discharge_block['avg_price'],
                     'price_spread': price_spread,
                     'potential_daily_profit': potential_profit,
-                    'charge_rank': charge_block['price_rank'],
-                    'discharge_rank': discharge_block['price_rank']
+                    'charge_rank': best_charge_blocks.index(charge_block) + 1,
+                    'discharge_rank': best_discharge_blocks.index(discharge_block) + 1
                 })
     
     # Sort by potential profit
@@ -786,7 +784,8 @@ def main():
                             'Rank': i,
                             'Window': f"{int(block['start_hour']):02d}:00-{int(block['end_hour']):02d}:00",
                             'Avg Price ($/MWh)': f"${block['avg_price']:.2f}",
-                            'Price Rank': block['price_rank']
+                            'Hour 1 Price': f"${block['hour1_price']:.2f}",
+                            'Hour 2 Price': f"${block['hour2_price']:.2f}"
                         })
                     
                     charge_df = pd.DataFrame(charge_data)
@@ -802,7 +801,8 @@ def main():
                             'Rank': i,
                             'Window': f"{int(block['start_hour']):02d}:00-{int(block['end_hour']):02d}:00",
                             'Avg Price ($/MWh)': f"${block['avg_price']:.2f}",
-                            'Price Rank': block['price_rank']
+                            'Hour 1 Price': f"${block['hour1_price']:.2f}",
+                            'Hour 2 Price': f"${block['hour2_price']:.2f}"
                         })
                     
                     discharge_df = pd.DataFrame(discharge_data)
