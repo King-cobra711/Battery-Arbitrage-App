@@ -165,18 +165,6 @@ The app provides comprehensive analysis including:
 - **Students**: Learn about energy markets and battery economics
 - **Researchers**: Study arbitrage strategies and market dynamics
 
-## 📝 License
-
-This project is open source and available under the MIT License.
-
-## 🤝 Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-## 📞 Support
-
-For questions or issues, please open an issue on GitHub.
-
 ---
 
 **Note**: This application uses simulated data for educational purposes. Real trading decisions should be based on actual market data and professional analysis.
