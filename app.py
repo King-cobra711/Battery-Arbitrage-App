@@ -186,6 +186,92 @@ def simulate_arbitrage(df, battery_size_mw, battery_capacity_mwh,
     
     return pd.DataFrame(results), daily_profits
 
+def recommend_optimal_windows(df, battery_size_mw, battery_capacity_mwh, round_trip_efficiency):
+    """
+    Analyze price patterns and recommend optimal 2-hour charge/discharge windows for OTC hedging
+    """
+    if df is None or df.empty:
+        return None
+    
+    # Convert efficiency to decimal
+    efficiency = round_trip_efficiency / 100
+    
+    # Group by hour and calculate average prices
+    df['hour'] = df.index.hour
+    hourly_prices = df.groupby('hour')['price'].agg(['mean', 'std', 'min', 'max']).reset_index()
+    
+    # Find the 4 lowest price hours for charging (2-hour blocks)
+    hourly_prices_sorted = hourly_prices.sort_values('mean')
+    
+    # Find optimal 2-hour charge blocks
+    best_charge_blocks = []
+    for i in range(len(hourly_prices_sorted) - 1):
+        hour1 = hourly_prices_sorted.iloc[i]['hour']
+        hour2 = hourly_prices_sorted.iloc[i + 1]['hour']
+        
+        # Check if hours are consecutive
+        if (hour2 - hour1) == 1 or (hour1 == 23 and hour2 == 0):
+            avg_price = (hourly_prices_sorted.iloc[i]['mean'] + hourly_prices_sorted.iloc[i + 1]['mean']) / 2
+            best_charge_blocks.append({
+                'start_hour': min(hour1, hour2),
+                'end_hour': max(hour1, hour2),
+                'avg_price': avg_price,
+                'price_rank': i + 1
+            })
+    
+    # Sort by average price (lowest first)
+    best_charge_blocks.sort(key=lambda x: x['avg_price'])
+    
+    # Find optimal 2-hour discharge blocks (highest prices)
+    hourly_prices_sorted_desc = hourly_prices.sort_values('mean', ascending=False)
+    
+    best_discharge_blocks = []
+    for i in range(len(hourly_prices_sorted_desc) - 1):
+        hour1 = hourly_prices_sorted_desc.iloc[i]['hour']
+        hour2 = hourly_prices_sorted_desc.iloc[i + 1]['hour']
+        
+        # Check if hours are consecutive
+        if (hour2 - hour1) == 1 or (hour1 == 23 and hour2 == 0):
+            avg_price = (hourly_prices_sorted_desc.iloc[i]['mean'] + hourly_prices_sorted_desc.iloc[i + 1]['mean']) / 2
+            best_discharge_blocks.append({
+                'start_hour': min(hour1, hour2),
+                'end_hour': max(hour1, hour2),
+                'avg_price': avg_price,
+                'price_rank': i + 1
+            })
+    
+    # Sort by average price (highest first)
+    best_discharge_blocks.sort(key=lambda x: x['avg_price'], reverse=True)
+    
+    # Calculate potential arbitrage opportunities
+    arbitrage_opportunities = []
+    for charge_block in best_charge_blocks[:3]:  # Top 3 charge blocks
+        for discharge_block in best_discharge_blocks[:3]:  # Top 3 discharge blocks
+            if charge_block['start_hour'] != discharge_block['start_hour']:  # Avoid same time
+                price_spread = discharge_block['avg_price'] - charge_block['avg_price']
+                potential_profit = price_spread * battery_size_mw * 2 * efficiency  # 2 hours
+                
+                arbitrage_opportunities.append({
+                    'charge_window': f"{int(charge_block['start_hour']):02d}:00-{int(charge_block['end_hour']):02d}:00",
+                    'discharge_window': f"{int(discharge_block['start_hour']):02d}:00-{int(discharge_block['end_hour']):02d}:00",
+                    'charge_price': charge_block['avg_price'],
+                    'discharge_price': discharge_block['avg_price'],
+                    'price_spread': price_spread,
+                    'potential_daily_profit': potential_profit,
+                    'charge_rank': charge_block['price_rank'],
+                    'discharge_rank': discharge_block['price_rank']
+                })
+    
+    # Sort by potential profit
+    arbitrage_opportunities.sort(key=lambda x: x['potential_daily_profit'], reverse=True)
+    
+    return {
+        'hourly_prices': hourly_prices,
+        'best_charge_blocks': best_charge_blocks[:5],  # Top 5
+        'best_discharge_blocks': best_discharge_blocks[:5],  # Top 5
+        'arbitrage_opportunities': arbitrage_opportunities[:5]  # Top 5
+    }
+
 def main():
     # Initialize session state for storing data
     if 'price_data' not in st.session_state:
@@ -512,6 +598,112 @@ def main():
             
             config_df = pd.DataFrame(config_data)
             st.dataframe(config_df, use_container_width=True)
+            
+            # OTC Hedging Recommendations
+            st.markdown("### 🎯 OTC Hedging Recommendations")
+            
+            # Get recommendations
+            recommendations = recommend_optimal_windows(df, battery_size_mw, battery_capacity_mwh, round_trip_efficiency)
+            
+            if recommendations:
+                # Show hourly price analysis
+                st.markdown("#### 📊 Hourly Price Analysis")
+                
+                hourly_df = recommendations['hourly_prices'].copy()
+                hourly_df['hour'] = hourly_df['hour'].astype(str) + ':00'
+                hourly_df.columns = ['Hour', 'Avg Price ($/MWh)', 'Std Dev', 'Min Price', 'Max Price']
+                hourly_df['Avg Price ($/MWh)'] = hourly_df['Avg Price ($/MWh)'].round(2)
+                hourly_df['Std Dev'] = hourly_df['Std Dev'].round(2)
+                hourly_df['Min Price'] = hourly_df['Min Price'].round(2)
+                hourly_df['Max Price'] = hourly_df['Max Price'].round(2)
+                
+                st.dataframe(hourly_df, use_container_width=True)
+                
+                # Show best charge blocks
+                st.markdown("#### 🔋 Best 2-Hour Charge Windows (Lowest Prices)")
+                charge_blocks = recommendations['best_charge_blocks']
+                if charge_blocks:
+                    charge_data = []
+                    for i, block in enumerate(charge_blocks, 1):
+                        charge_data.append({
+                            'Rank': i,
+                            'Window': f"{int(block['start_hour']):02d}:00-{int(block['end_hour']):02d}:00",
+                            'Avg Price ($/MWh)': f"${block['avg_price']:.2f}",
+                            'Price Rank': block['price_rank']
+                        })
+                    
+                    charge_df = pd.DataFrame(charge_data)
+                    st.dataframe(charge_df, use_container_width=True)
+                
+                # Show best discharge blocks
+                st.markdown("#### ⚡ Best 2-Hour Discharge Windows (Highest Prices)")
+                discharge_blocks = recommendations['best_discharge_blocks']
+                if discharge_blocks:
+                    discharge_data = []
+                    for i, block in enumerate(discharge_blocks, 1):
+                        discharge_data.append({
+                            'Rank': i,
+                            'Window': f"{int(block['start_hour']):02d}:00-{int(block['end_hour']):02d}:00",
+                            'Avg Price ($/MWh)': f"${block['avg_price']:.2f}",
+                            'Price Rank': block['price_rank']
+                        })
+                    
+                    discharge_df = pd.DataFrame(discharge_data)
+                    st.dataframe(discharge_df, use_container_width=True)
+                
+                # Show arbitrage opportunities
+                st.markdown("#### 💰 Top Arbitrage Opportunities (2-Hour Blocks)")
+                opportunities = recommendations['arbitrage_opportunities']
+                if opportunities:
+                    opp_data = []
+                    for i, opp in enumerate(opportunities, 1):
+                        opp_data.append({
+                            'Rank': i,
+                            'Charge Window': opp['charge_window'],
+                            'Discharge Window': opp['discharge_window'],
+                            'Charge Price ($/MWh)': f"${opp['charge_price']:.2f}",
+                            'Discharge Price ($/MWh)': f"${opp['discharge_price']:.2f}",
+                            'Price Spread ($/MWh)': f"${opp['price_spread']:.2f}",
+                            'Potential Daily Profit ($)': f"${opp['potential_daily_profit']:,.2f}"
+                        })
+                    
+                    opp_df = pd.DataFrame(opp_data)
+                    st.dataframe(opp_df, use_container_width=True)
+                    
+                    # Highlight the best opportunity
+                    if opportunities:
+                        best_opp = opportunities[0]
+                        st.success(f"**🎯 Recommended OTC Strategy:** Charge {best_opp['charge_window']}, Discharge {best_opp['discharge_window']}")
+                        st.info(f"**Expected Daily Profit:** ${best_opp['potential_daily_profit']:,.2f} | **Price Spread:** ${best_opp['price_spread']:.2f}/MWh")
+                
+                # Show explanation
+                with st.expander("ℹ️ OTC Hedging Strategy Explanation"):
+                    st.markdown("""
+                    **OTC (Over-The-Counter) Hedging Strategy:**
+                    
+                    This analysis identifies the most profitable 2-hour blocks for battery arbitrage based on historical price patterns:
+                    
+                    **Charge Strategy:**
+                    - Target the lowest average price 2-hour periods
+                    - Minimize energy purchase costs
+                    - Consider overnight/off-peak periods
+                    
+                    **Discharge Strategy:**
+                    - Target the highest average price 2-hour periods
+                    - Maximize energy sales revenue
+                    - Focus on peak demand periods
+                    
+                    **Arbitrage Opportunities:**
+                    - Ranked by potential daily profit
+                    - Calculated using: (Discharge Price - Charge Price) × Power × Hours × Efficiency
+                    - Considers battery power constraints and efficiency losses
+                    
+                    **OTC Contract Structure:**
+                    - Fixed 2-hour blocks for simplicity
+                    - Contiguous time windows for operational ease
+                    - Based on average historical prices
+                    - Suitable for forward contract negotiations
+                    """)
     
     # Instructions (always show when no simulation has been run)
     st.markdown("""
