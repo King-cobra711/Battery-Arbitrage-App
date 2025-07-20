@@ -1,0 +1,192 @@
+BATTERY ARBITRAGE PROFIT CALCULATION EXPLANATION
+================================================
+
+OVERVIEW
+--------
+This app calculates profit from battery arbitrage by buying electricity during low-price periods and selling during high-price periods, accounting for battery efficiency losses and operational constraints.
+
+CORE PROFIT FORMULA
+-------------------
+Daily Profit = Total Discharge Revenue - Total Charge Cost
+
+Where:
+- Total Discharge Revenue = Sum of (Discharge Amount × Discharge Price) for all discharge periods
+- Total Charge Cost = Sum of (Charge Amount × Charge Price) for all charge periods
+
+DETAILED CALCULATION PROCESS
+----------------------------
+
+1. PRICE DATA GENERATION
+------------------------
+The app generates realistic QLD electricity prices using:
+
+Base Price: $80/MWh
+
+Seasonal Adjustments:
+- Summer (Dec-Feb): × 1.2
+- Winter (Jun-Aug): × 1.15  
+- Autumn (Mar-May): × 0.9
+- Spring (Sep-Nov): × 0.85
+
+Time-of-Day Factors:
+- Morning Peak (6-9 AM): × 1.8
+- Evening Peak (5-8 PM): × 2.0
+- Off-Peak Night (10 PM-6 AM): × 0.6
+- Daytime (Other): × 1.2
+
+Final Price = Base Price × Seasonal Factor × Time Factor × (1 + Volatility)
+Where Volatility = ±15% random variation
+Price Bounds: $20 - $300/MWh
+
+2. BATTERY OPERATION CONSTRAINTS
+--------------------------------
+
+Power Constraints (per 30-minute interval):
+- Max Discharge Rate = Battery Power (MW)
+- Max Charge Rate = Battery Power (MW)
+- Actual Discharge = min(Battery Power × 0.5, Available Energy × Efficiency)
+- Actual Charge = min(Battery Power × 0.5, Available Capacity)
+
+Energy Constraints:
+- Max Energy Stored = Battery Capacity (MWh)
+- Min Energy Stored = 0 MWh
+- Available Capacity = Battery Capacity - Current Energy Stored
+
+Efficiency Constraints:
+- Round-trip Efficiency = User Input (e.g., 85%)
+- Efficiency Decimal = Efficiency % ÷ 100 (e.g., 0.85)
+- Available Energy for Discharge = Stored Energy × Efficiency
+- Energy Loss = Energy × (1 - Efficiency)
+
+3. CHARGE CALCULATIONS
+----------------------
+
+For each 30-minute interval during charge periods:
+
+Charge Amount = min(Battery Power × 0.5, Available Capacity)
+Where: Available Capacity = Battery Capacity - Current Energy Stored
+
+Charge Cost = Charge Amount (MWh) × Electricity Price ($/MWh)
+
+New Energy Stored = Current Energy Stored + Charge Amount
+
+Example:
+- Battery Power: 100 MW
+- Available Capacity: 400 MWh
+- Price: $60/MWh
+- Charge Amount = min(100 × 0.5, 400) = min(50, 400) = 50 MWh
+- Charge Cost = 50 MWh × $60/MWh = $3,000
+- Energy Stored = 0 + 50 = 50 MWh
+
+4. DISCHARGE CALCULATIONS
+-------------------------
+
+For each 30-minute interval during discharge periods:
+
+Discharge Amount = min(Battery Power × 0.5, Energy Stored × Efficiency)
+
+Discharge Revenue = Discharge Amount (MWh) × Electricity Price ($/MWh)
+
+Energy Removed from Battery = Discharge Amount ÷ Efficiency
+
+Example:
+- Battery Power: 100 MW
+- Energy Stored: 50 MWh
+- Efficiency: 85% (0.85)
+- Price: $150/MWh
+- Discharge Amount = min(100 × 0.5, 50 × 0.85) = min(50, 42.5) = 42.5 MWh
+- Discharge Revenue = 42.5 MWh × $150/MWh = $6,375
+- Energy Removed = 42.5 ÷ 0.85 = 50 MWh
+- Energy Stored = 50 - 50 = 0 MWh
+
+5. DAILY PROFIT CALCULATION
+---------------------------
+
+The app processes each day separately:
+
+1. Identifies charge periods (user-defined hours)
+2. Identifies discharge periods (user-defined hours)
+3. Calculates total charge cost for the day
+4. Calculates total discharge revenue for the day
+5. Calculates daily profit = discharge revenue - charge cost
+
+Example Daily Calculation:
+- Total Charge Cost: $3,000
+- Total Discharge Revenue: $6,375
+- Daily Profit: $6,375 - $3,000 = $3,375
+
+6. CUMULATIVE PROFIT
+--------------------
+
+Cumulative Profit = Previous Cumulative Profit + Daily Profit
+
+Example:
+- Day 1 Profit: $3,375
+- Day 2 Profit: $2,800
+- Cumulative Profit Day 1: $3,375
+- Cumulative Profit Day 2: $3,375 + $2,800 = $6,175
+
+7. KEY CONSTRAINTS AND LIMITATIONS
+----------------------------------
+
+Power Constraints:
+- Battery cannot discharge more than its rated power
+- Battery cannot charge more than its rated power
+- Power is limited to 30-minute intervals (0.5 hours)
+
+Energy Constraints:
+- Battery cannot store more than its capacity
+- Battery cannot discharge more than its stored energy
+- Energy stored cannot go below 0
+
+Efficiency Constraints:
+- Only stored energy × efficiency is available for discharge
+- Energy loss occurs during charge/discharge cycle
+- Round-trip efficiency accounts for both charge and discharge losses
+
+8. PROFIT DRIVERS
+-----------------
+
+Factors that increase profit:
+1. Higher price spread between charge and discharge periods
+2. Larger battery capacity (more energy arbitrage)
+3. Higher round-trip efficiency (less energy loss)
+4. Optimal trading windows (charge during lowest prices, discharge during highest)
+5. Longer simulation periods (more opportunities)
+
+9. RISK FACTORS
+---------------
+
+Factors that can reduce profit:
+1. Price volatility and unpredictability
+2. Battery degradation over time
+3. Market structure changes
+4. Technical failures
+5. Regulatory changes
+
+10. EXAMPLE COMPLETE CALCULATION
+--------------------------------
+
+Scenario: 100 MW / 400 MWh Battery, 85% Efficiency
+
+Day 1:
+- Charge Period (10 AM - 2 PM): 4 hours, $60/MWh average
+- Discharge Period (5 PM - 9 PM): 4 hours, $150/MWh average
+
+Charge Calculations:
+- Charge Amount per 30min = min(100 × 0.5, 400) = 50 MWh
+- Total Charge Amount = 50 MWh × 8 intervals = 400 MWh
+- Total Charge Cost = 400 MWh × $60/MWh = $24,000
+- Energy Stored = 400 MWh
+
+Discharge Calculations:
+- Available Energy = 400 MWh × 0.85 = 340 MWh
+- Discharge Amount per 30min = min(100 × 0.5, 340) = 50 MWh
+- Total Discharge Amount = 50 MWh × 8 intervals = 400 MWh
+- Total Discharge Revenue = 400 MWh × $150/MWh = $60,000
+- Energy Removed = 400 MWh ÷ 0.85 = 470.6 MWh
+- Final Energy Stored = 400 - 470.6 = -70.6 MWh (capped at 0)
+
+Daily Profit = $60,000 - $24,000 = $36,000
+
+This example shows how a $90/MWh price spread ($150 - $60) with 85% efficiency can generate significant daily profit from battery arbitrage. 

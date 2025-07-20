@@ -1,0 +1,202 @@
+BATTERY ARBITRAGE CALCULATIONS CHEAT SHEET
+============================================
+
+PRICE DATA GENERATION
+=====================
+
+Base Price Calculation:
+- Base Price = $80/MWh (QLD wholesale average)
+
+Seasonal Adjustments:
+- Summer (Dec-Feb): Base Price × 1.2
+- Winter (Jun-Aug): Base Price × 1.15
+- Autumn (Mar-May): Base Price × 0.9
+- Spring (Sep-Nov): Base Price × 0.85
+
+Time-of-Day Factors:
+- Morning Peak (6-9 AM): Base Price × 1.8
+- Evening Peak (5-8 PM): Base Price × 2.0
+- Off-Peak Night (10 PM-6 AM): Base Price × 0.6
+- Daytime (Other): Base Price × 1.2
+
+Weekend Adjustment:
+- Weekend Prices = Weekday Prices × 0.8
+
+Final Price Formula:
+- Final Price = Base Price × Seasonal Factor × Time Factor × (1 + Volatility)
+- Where: Volatility = ±15% random variation
+- Price Bounds: $20 - $300/MWh
+
+BATTERY SPECIFICATIONS
+======================
+
+Power to Energy Conversion (30-min intervals):
+- Max Discharge per 30min = Battery Power (MW) × 0.5 hours
+- Max Charge per 30min = Battery Power (MW) × 0.5 hours
+
+Efficiency Conversion:
+- Efficiency Decimal = Round-trip Efficiency (%) ÷ 100
+- Example: 85% efficiency = 0.85
+
+CHARGE CALCULATIONS
+===================
+
+Charge Amount (per 30-min interval):
+- Charge Amount = min(Battery Power × 0.5, Available Capacity)
+- Where: Available Capacity = Battery Capacity - Current Energy Stored
+
+Charge Cost:
+- Charge Cost = Charge Amount (MWh) × Electricity Price ($/MWh)
+
+Energy Stored After Charge:
+- New Energy Stored = Current Energy Stored + Charge Amount
+
+DISCHARGE CALCULATIONS
+======================
+
+Discharge Amount (per 30-min interval):
+- Discharge Amount = min(Battery Power × 0.5, Energy Stored × Efficiency)
+
+Discharge Revenue:
+- Discharge Revenue = Discharge Amount (MWh) × Electricity Price ($/MWh)
+
+Energy Removed from Battery:
+- Energy Removed = Discharge Amount ÷ Efficiency
+
+Energy Stored After Discharge:
+- New Energy Stored = Current Energy Stored - Energy Removed
+
+PROFIT CALCULATIONS
+===================
+
+Daily Profit:
+- Daily Profit = Total Discharge Revenue - Total Charge Cost
+
+Cumulative Profit:
+- Cumulative Profit = Previous Cumulative Profit + Daily Profit
+
+Profit Margin:
+- Profit Margin (%) = (Daily Profit ÷ Total Charge Cost) × 100
+
+KEY METRICS
+===========
+
+Total Profit:
+- Total Profit = Sum of all daily profits
+
+Average Daily Profit:
+- Average Daily Profit = Total Profit ÷ Number of Days
+
+Return on Investment (ROI):
+- ROI (%) = (Total Profit ÷ Battery Cost) × 100
+
+Payback Period:
+- Payback Period (years) = Battery Cost ÷ (Average Daily Profit × 365)
+
+EXAMPLE CALCULATIONS
+===================
+
+Scenario: 100 MW / 400 MWh Battery, 85% Efficiency
+
+Charge Period (10 AM - 2 PM, $60/MWh):
+- Charge Amount = min(100 × 0.5, 400 - 0) = 50 MWh
+- Charge Cost = 50 MWh × $60/MWh = $3,000
+- Energy Stored = 0 + 50 = 50 MWh
+
+Discharge Period (5 PM - 9 PM, $150/MWh):
+- Discharge Amount = min(100 × 0.5, 50 × 0.85) = min(50, 42.5) = 42.5 MWh
+- Discharge Revenue = 42.5 MWh × $150/MWh = $6,375
+- Energy Removed = 42.5 ÷ 0.85 = 50 MWh
+- Energy Stored = 50 - 50 = 0 MWh
+
+Daily Profit:
+- Daily Profit = $6,375 - $3,000 = $3,375
+
+TRADING WINDOW OPTIMIZATION
+===========================
+
+Optimal Charge Window:
+- Lowest average prices during the day
+- Sufficient duration to fill battery capacity
+- Before peak demand periods
+
+Optimal Discharge Window:
+- Highest average prices during the day
+- Peak demand periods
+- After charge window completion
+
+Profit Maximization Formula:
+- Max Profit = max(Discharge Price - Charge Price) × Energy × Efficiency
+
+DATA PROCESSING
+===============
+
+30-Minute Intervals:
+- Intervals per Day = 24 hours × 2 = 48 intervals
+- Intervals per Hour = 2 intervals
+
+Price Data Structure:
+- Timestamp: YYYY-MM-DD HH:MM
+- Price: $/MWh (2 decimal places)
+
+Date Range:
+- Start Date = Current Date - Days Back
+- End Date = Current Date
+
+CONSTRAINTS & LIMITATIONS
+=========================
+
+Power Constraints:
+- Max Discharge Rate = Battery Power (MW)
+- Max Charge Rate = Battery Power (MW)
+
+Energy Constraints:
+- Max Energy Stored = Battery Capacity (MWh)
+- Min Energy Stored = 0 MWh
+
+Efficiency Constraints:
+- Available Energy = Stored Energy × Efficiency
+- Energy Loss = Energy × (1 - Efficiency)
+
+EXPORT DATA FORMAT
+==================
+
+Daily Results CSV:
+- Date, Charge Cost ($), Discharge Revenue ($), Daily Profit ($), Energy Stored (MWh), Cumulative Profit ($)
+
+Configuration Summary:
+- Parameter, Value
+- Battery Power (MW), [value]
+- Battery Capacity (MWh), [value]
+- Round-trip Efficiency (%), [value]
+- Charge Window, [start]:00 - [end]:00
+- Discharge Window, [start]:00 - [end]:00
+- Simulation Period, [days] days
+
+KEY INSIGHTS
+============
+
+Profit Drivers:
+1. Price Spread: Higher difference between charge and discharge prices
+2. Battery Size: Larger capacity = more energy arbitrage
+3. Efficiency: Higher efficiency = less energy loss
+4. Trading Windows: Optimal timing maximizes profit
+
+Risk Factors:
+1. Price Volatility: Unpredictable price movements
+2. Battery Degradation: Reduced capacity over time
+3. Market Changes: Regulatory or structural changes
+4. Technical Issues: Battery or grid failures
+
+NOTES
+======
+
+- All calculations assume 30-minute intervals
+- Prices are in $/MWh
+- Energy is in MWh
+- Power is in MW
+- Efficiency is expressed as decimal (0.85 for 85%)
+- Time windows are in 24-hour format (0-23)
+- All monetary values are in Australian dollars ($)
+
+This cheat sheet covers all essential calculations for battery arbitrage analysis. 
