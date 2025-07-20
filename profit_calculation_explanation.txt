@@ -3,7 +3,7 @@ BATTERY ARBITRAGE PROFIT CALCULATION EXPLANATION
 
 OVERVIEW
 --------
-This app calculates profit from battery arbitrage by buying electricity during low-price periods and selling during high-price periods, accounting for battery efficiency losses and operational constraints.
+This app calculates profit from battery arbitrage by buying electricity during low-price periods and selling during high-price periods, accounting for battery efficiency losses and operational constraints. The app now includes solar crash modeling to reflect modern electricity markets with high solar penetration.
 
 CORE PROFIT FORMULA
 -------------------
@@ -12,12 +12,13 @@ Daily Profit = Total Discharge Revenue - Total Charge Cost
 Where:
 - Total Discharge Revenue = Sum of (Discharge Amount × Discharge Price) for all discharge periods
 - Total Charge Cost = Sum of (Charge Amount × Charge Price) for all charge periods
+- Note: Charge cost can be negative during solar crash periods (paid to consume)
 
 DETAILED CALCULATION PROCESS
 ----------------------------
 
-1. PRICE DATA GENERATION
-------------------------
+1. PRICE DATA GENERATION (WITH SOLAR CRASH MODELING)
+---------------------------------------------------
 The app generates realistic QLD electricity prices using:
 
 Base Price: $80/MWh
@@ -28,15 +29,45 @@ Seasonal Adjustments:
 - Autumn (Mar-May): × 0.9
 - Spring (Sep-Nov): × 0.85
 
-Time-of-Day Factors:
-- Morning Peak (6-9 AM): × 1.8
-- Evening Peak (5-8 PM): × 2.0
-- Off-Peak Night (10 PM-6 AM): × 0.6
-- Daytime (Other): × 1.2
+SOLAR GENERATION PATTERNS:
+- Early Morning Ramp (6-10 AM): Solar intensity = (hour - 6) / 4
+- Ramp Up (10-11:30 AM): Solar intensity = 0.8 + (hour - 10) × 0.13
+- Peak Solar (11:30 AM-1:00 PM): Solar intensity = 1.0
+- Ramp Down (1:00-2:30 PM): Solar intensity = 1.0 - (hour - 13) × 0.13
+- Afternoon Decline (2:30-6 PM): Solar intensity = max(0, 0.8 - (hour - 14.5) × 0.2)
 
-Final Price = Base Price × Seasonal Factor × Time Factor × (1 + Volatility)
+Seasonal Solar Intensity:
+- Summer (Dec-Feb): Solar intensity × 1.3 (strongest)
+- Winter (Jun-Aug): Solar intensity × 0.6 (weakest)
+- Autumn (Mar-May): Solar intensity × 0.8
+- Spring (Sep-Nov): Solar intensity × 1.1
+
+SOLAR CRASH PRICE EFFECTS:
+- 10-11:30 AM: Solar crash = Solar intensity × 0.3 (up to 30% price reduction)
+- 11:30 AM-1:00 PM: Solar crash = Solar intensity × 0.8 (up to 80% price reduction, can go negative)
+- 1:00-2:30 PM: Solar crash = Solar intensity × 0.5 (up to 50% price reduction)
+- Morning Ramp (7-9 AM): Solar factor = 1.1 (higher prices before solar)
+- Evening Ramp (17-19): Solar factor = 1.8 (highest prices after solar drops)
+
+Time-of-Day Factors (Modified for Solar):
+- Morning Peak (6-9 AM): Base Price × 1.6 (before solar)
+- Solar Peak (10-16): Base Price × 0.8 (reduced due to solar)
+- Evening Peak (17-20): Base Price × 2.2 (highest due to solar drop + demand)
+- Off-Peak Night (22-6): Base Price × 0.6
+- Other Daytime: Base Price × 1.0
+
+SOLAR CRASH TIME PATTERNS:
+- 10:00 AM: Rooftop & utility solar ramping up, prices begin to fall
+- 11:30 AM: Solar near maximum output, prices often <$50/MWh
+- 12:00-1:00 PM: Maximum solar penetration, prices can be $0 or negative
+- 2:00-2:30 PM: Solar starts ramping down, prices begin rising again
+
+Final Price Formula (with Solar):
+Final Price = Base Price × Seasonal Factor × Time Factor × Solar Factor × (1 + Volatility)
 Where Volatility = ±15% random variation
-Price Bounds: $20 - $300/MWh
+Price Bounds: 
+- Normal times: $20 - $300/MWh
+- Peak solar (11:30 AM-1:00 PM): -$50 to $300/MWh
 
 2. BATTERY OPERATION CONSTRAINTS
 --------------------------------
@@ -58,6 +89,11 @@ Efficiency Constraints:
 - Available Energy for Discharge = Stored Energy × Efficiency
 - Energy Loss = Energy × (1 - Efficiency)
 
+Solar Constraints:
+- Solar generation only during daylight hours (6 AM-6 PM)
+- Seasonal solar intensity variations
+- Geographic solar penetration factors
+
 3. CHARGE CALCULATIONS
 ----------------------
 
@@ -67,15 +103,16 @@ Charge Amount = min(Battery Power × 0.5, Available Capacity)
 Where: Available Capacity = Battery Capacity - Current Energy Stored
 
 Charge Cost = Charge Amount (MWh) × Electricity Price ($/MWh)
+Note: Can be negative during peak solar (paid to consume)
 
 New Energy Stored = Current Energy Stored + Charge Amount
 
-Example:
+Example (Solar Crash Period):
 - Battery Power: 100 MW
 - Available Capacity: 400 MWh
-- Price: $60/MWh
+- Price: -$10/MWh (during solar crash)
 - Charge Amount = min(100 × 0.5, 400) = min(50, 400) = 50 MWh
-- Charge Cost = 50 MWh × $60/MWh = $3,000
+- Charge Cost = 50 MWh × -$10/MWh = -$500 (paid to consume)
 - Energy Stored = 0 + 50 = 50 MWh
 
 4. DISCHARGE CALCULATIONS
@@ -89,13 +126,13 @@ Discharge Revenue = Discharge Amount (MWh) × Electricity Price ($/MWh)
 
 Energy Removed from Battery = Discharge Amount ÷ Efficiency
 
-Example:
+Example (Evening Peak After Solar Drop):
 - Battery Power: 100 MW
 - Energy Stored: 50 MWh
 - Efficiency: 85% (0.85)
-- Price: $150/MWh
+- Price: $180/MWh (evening peak after solar drops)
 - Discharge Amount = min(100 × 0.5, 50 × 0.85) = min(50, 42.5) = 42.5 MWh
-- Discharge Revenue = 42.5 MWh × $150/MWh = $6,375
+- Discharge Revenue = 42.5 MWh × $180/MWh = $7,650
 - Energy Removed = 42.5 ÷ 0.85 = 50 MWh
 - Energy Stored = 50 - 50 = 0 MWh
 
@@ -106,14 +143,14 @@ The app processes each day separately:
 
 1. Identifies charge periods (user-defined hours)
 2. Identifies discharge periods (user-defined hours)
-3. Calculates total charge cost for the day
+3. Calculates total charge cost for the day (can be negative during solar crash)
 4. Calculates total discharge revenue for the day
 5. Calculates daily profit = discharge revenue - charge cost
 
-Example Daily Calculation:
-- Total Charge Cost: $3,000
-- Total Discharge Revenue: $6,375
-- Daily Profit: $6,375 - $3,000 = $3,375
+Example Daily Calculation (with Solar Crash):
+- Total Charge Cost: -$500 (paid to consume during solar crash)
+- Total Discharge Revenue: $7,650
+- Daily Profit: $7,650 - (-$500) = $8,150
 
 6. CUMULATIVE PROFIT
 --------------------
@@ -121,12 +158,32 @@ Example Daily Calculation:
 Cumulative Profit = Previous Cumulative Profit + Daily Profit
 
 Example:
-- Day 1 Profit: $3,375
-- Day 2 Profit: $2,800
-- Cumulative Profit Day 1: $3,375
-- Cumulative Profit Day 2: $3,375 + $2,800 = $6,175
+- Day 1 Profit: $8,150
+- Day 2 Profit: $6,200
+- Cumulative Profit Day 1: $8,150
+- Cumulative Profit Day 2: $8,150 + $6,200 = $14,350
 
-7. KEY CONSTRAINTS AND LIMITATIONS
+7. SOLAR ARBITRAGE OPPORTUNITIES
+--------------------------------
+
+Optimal Charge Strategy:
+- Target midday solar crash periods (10 AM-4 PM)
+- Focus on 11:30 AM-1:00 PM for negative prices
+- Consider overnight/off-peak periods
+- Account for seasonal solar intensity variations
+
+Optimal Discharge Strategy:
+- Target evening peak periods (5-8 PM) when solar drops
+- Consider morning ramp periods (6-9 AM) before solar peaks
+- Maximize energy sales revenue during high-demand periods
+
+Solar Crash Arbitrage:
+- Charge during solar peak: Buy low during midday solar generation
+- Discharge during evening peak: Sell high when solar drops and demand peaks
+- Negative price opportunities: Charge when prices are negative (paid to consume)
+- Seasonal adjustments: Stronger solar effects in summer
+
+8. KEY CONSTRAINTS AND LIMITATIONS
 ----------------------------------
 
 Power Constraints:
@@ -144,49 +201,59 @@ Efficiency Constraints:
 - Energy loss occurs during charge/discharge cycle
 - Round-trip efficiency accounts for both charge and discharge losses
 
-8. PROFIT DRIVERS
+Solar Constraints:
+- Solar generation only during daylight hours (6 AM-6 PM)
+- Seasonal solar intensity variations
+- Geographic solar penetration factors
+- Weather-dependent solar output variability
+
+9. PROFIT DRIVERS
 -----------------
 
 Factors that increase profit:
 1. Higher price spread between charge and discharge periods
-2. Larger battery capacity (more energy arbitrage)
-3. Higher round-trip efficiency (less energy loss)
-4. Optimal trading windows (charge during lowest prices, discharge during highest)
-5. Longer simulation periods (more opportunities)
+2. Solar crash opportunities with negative prices
+3. Larger battery capacity (more energy arbitrage)
+4. Higher round-trip efficiency (less energy loss)
+5. Optimal trading windows (charge during solar crash, discharge during evening peak)
+6. Longer simulation periods (more opportunities)
+7. Duck curve dynamics (evening peak after solar drop)
 
-9. RISK FACTORS
----------------
+10. RISK FACTORS
+----------------
 
 Factors that can reduce profit:
 1. Price volatility and unpredictability
-2. Battery degradation over time
-3. Market structure changes
-4. Technical failures
-5. Regulatory changes
+2. Solar generation variability (weather-dependent)
+3. Battery degradation over time
+4. Market structure changes
+5. Technical failures
+6. Regulatory changes
+7. Solar penetration changes (increasing adoption)
 
-10. EXAMPLE COMPLETE CALCULATION
---------------------------------
+11. EXAMPLE COMPLETE CALCULATION (WITH SOLAR CRASH)
+---------------------------------------------------
 
 Scenario: 100 MW / 400 MWh Battery, 85% Efficiency
 
 Day 1:
-- Charge Period (10 AM - 2 PM): 4 hours, $60/MWh average
-- Discharge Period (5 PM - 9 PM): 4 hours, $150/MWh average
+- Charge Period (11:30 AM-1:00 PM): 1.5 hours, -$10/MWh average (solar crash)
+- Discharge Period (5 PM-7 PM): 2 hours, $180/MWh average (evening peak)
 
 Charge Calculations:
 - Charge Amount per 30min = min(100 × 0.5, 400) = 50 MWh
-- Total Charge Amount = 50 MWh × 8 intervals = 400 MWh
-- Total Charge Cost = 400 MWh × $60/MWh = $24,000
-- Energy Stored = 400 MWh
+- Total Charge Amount = 50 MWh × 3 intervals = 150 MWh
+- Total Charge Cost = 150 MWh × -$10/MWh = -$1,500 (paid to consume)
+- Energy Stored = 150 MWh
 
 Discharge Calculations:
-- Available Energy = 400 MWh × 0.85 = 340 MWh
-- Discharge Amount per 30min = min(100 × 0.5, 340) = 50 MWh
-- Total Discharge Amount = 50 MWh × 8 intervals = 400 MWh
-- Total Discharge Revenue = 400 MWh × $150/MWh = $60,000
-- Energy Removed = 400 MWh ÷ 0.85 = 470.6 MWh
-- Final Energy Stored = 400 - 470.6 = -70.6 MWh (capped at 0)
+- Available Energy = 150 MWh × 0.85 = 127.5 MWh
+- Discharge Amount per 30min = min(100 × 0.5, 127.5) = 50 MWh
+- Total Discharge Amount = 50 MWh × 4 intervals = 200 MWh
+- Total Discharge Revenue = 200 MWh × $180/MWh = $36,000
+- Energy Removed = 200 MWh ÷ 0.85 = 235.3 MWh
+- Final Energy Stored = 150 - 235.3 = -85.3 MWh (capped at 0)
 
-Daily Profit = $60,000 - $24,000 = $36,000
+Daily Profit = $36,000 - (-$1,500) = $37,500
 
-This example shows how a $90/MWh price spread ($150 - $60) with 85% efficiency can generate significant daily profit from battery arbitrage. 
+This example shows how solar crash effects with negative prices can significantly increase battery arbitrage profitability compared to traditional price spreads. 

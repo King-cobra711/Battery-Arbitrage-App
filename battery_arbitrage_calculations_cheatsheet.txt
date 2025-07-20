@@ -1,8 +1,8 @@
 BATTERY ARBITRAGE CALCULATIONS CHEAT SHEET
 ============================================
 
-PRICE DATA GENERATION
-=====================
+PRICE DATA GENERATION (WITH SOLAR CRASH MODELING)
+================================================
 
 Base Price Calculation:
 - Base Price = $80/MWh (QLD wholesale average)
@@ -13,19 +13,49 @@ Seasonal Adjustments:
 - Autumn (Mar-May): Base Price × 0.9
 - Spring (Sep-Nov): Base Price × 0.85
 
-Time-of-Day Factors:
-- Morning Peak (6-9 AM): Base Price × 1.8
-- Evening Peak (5-8 PM): Base Price × 2.0
-- Off-Peak Night (10 PM-6 AM): Base Price × 0.6
-- Daytime (Other): Base Price × 1.2
+SOLAR GENERATION PATTERNS:
+- Early Morning Ramp (6-10 AM): Solar intensity = (hour - 6) / 4
+- Ramp Up (10-11:30 AM): Solar intensity = 0.8 + (hour - 10) × 0.13
+- Peak Solar (11:30 AM-1:00 PM): Solar intensity = 1.0
+- Ramp Down (1:00-2:30 PM): Solar intensity = 1.0 - (hour - 13) × 0.13
+- Afternoon Decline (2:30-6 PM): Solar intensity = max(0, 0.8 - (hour - 14.5) × 0.2)
+
+Seasonal Solar Intensity:
+- Summer (Dec-Feb): Solar intensity × 1.3 (strongest)
+- Winter (Jun-Aug): Solar intensity × 0.6 (weakest)
+- Autumn (Mar-May): Solar intensity × 0.8
+- Spring (Sep-Nov): Solar intensity × 1.1
+
+SOLAR CRASH PRICE EFFECTS:
+- 10-11:30 AM: Solar crash = Solar intensity × 0.3 (up to 30% price reduction)
+- 11:30 AM-1:00 PM: Solar crash = Solar intensity × 0.8 (up to 80% price reduction, can go negative)
+- 1:00-2:30 PM: Solar crash = Solar intensity × 0.5 (up to 50% price reduction)
+- Morning Ramp (7-9 AM): Solar factor = 1.1 (higher prices before solar)
+- Evening Ramp (17-19): Solar factor = 1.8 (highest prices after solar drops)
+
+Time-of-Day Factors (Modified for Solar):
+- Morning Peak (6-9 AM): Base Price × 1.6 (before solar)
+- Solar Peak (10-16): Base Price × 0.8 (reduced due to solar)
+- Evening Peak (17-20): Base Price × 2.2 (highest due to solar drop + demand)
+- Off-Peak Night (22-6): Base Price × 0.6
+- Other Daytime: Base Price × 1.0
 
 Weekend Adjustment:
 - Weekend Prices = Weekday Prices × 0.8
+- Weekend Solar Crash = Solar intensity × 0.3 (reduced solar crash)
 
-Final Price Formula:
-- Final Price = Base Price × Seasonal Factor × Time Factor × (1 + Volatility)
+Final Price Formula (with Solar):
+- Final Price = Base Price × Seasonal Factor × Time Factor × Solar Factor × (1 + Volatility)
 - Where: Volatility = ±15% random variation
-- Price Bounds: $20 - $300/MWh
+- Price Bounds: 
+  * Normal times: $20 - $300/MWh
+  * Peak solar (11:30 AM-1:00 PM): -$50 to $300/MWh
+
+SOLAR CRASH TIME PATTERNS:
+- 10:00 AM: Rooftop & utility solar ramping up, prices begin to fall
+- 11:30 AM: Solar near maximum output, prices often <$50/MWh
+- 12:00-1:00 PM: Maximum solar penetration, prices can be $0 or negative
+- 2:00-2:30 PM: Solar starts ramping down, prices begin rising again
 
 BATTERY SPECIFICATIONS
 ======================
@@ -47,6 +77,7 @@ Charge Amount (per 30-min interval):
 
 Charge Cost:
 - Charge Cost = Charge Amount (MWh) × Electricity Price ($/MWh)
+- Note: Can be negative during peak solar (paid to consume)
 
 Energy Stored After Charge:
 - New Energy Stored = Current Energy Stored + Charge Amount
@@ -71,12 +102,33 @@ PROFIT CALCULATIONS
 
 Daily Profit:
 - Daily Profit = Total Discharge Revenue - Total Charge Cost
+- Note: Charge cost can be negative during solar crash periods
 
 Cumulative Profit:
 - Cumulative Profit = Previous Cumulative Profit + Daily Profit
 
 Profit Margin:
 - Profit Margin (%) = (Daily Profit ÷ Total Charge Cost) × 100
+
+SOLAR ARBITRAGE OPPORTUNITIES
+=============================
+
+Optimal Charge Strategy:
+- Target midday solar crash periods (10 AM-4 PM)
+- Focus on 11:30 AM-1:00 PM for negative prices
+- Consider overnight/off-peak periods
+- Account for seasonal solar intensity variations
+
+Optimal Discharge Strategy:
+- Target evening peak periods (5-8 PM) when solar drops
+- Consider morning ramp periods (6-9 AM) before solar peaks
+- Maximize energy sales revenue during high-demand periods
+
+Solar Crash Arbitrage:
+- Charge during solar peak: Buy low during midday solar generation
+- Discharge during evening peak: Sell high when solar drops and demand peaks
+- Negative price opportunities: Charge when prices are negative (paid to consume)
+- Seasonal adjustments: Stronger solar effects in summer
 
 KEY METRICS
 ===========
@@ -93,40 +145,48 @@ Return on Investment (ROI):
 Payback Period:
 - Payback Period (years) = Battery Cost ÷ (Average Daily Profit × 365)
 
-EXAMPLE CALCULATIONS
-===================
+Solar Crash Impact:
+- Price Reduction = ((Non-Solar Avg - Solar Avg) ÷ Non-Solar Avg) × 100
+- Solar Hours: 10 AM-4 PM
+- Non-Solar Hours: All other hours
+
+EXAMPLE CALCULATIONS (WITH SOLAR CRASH)
+=======================================
 
 Scenario: 100 MW / 400 MWh Battery, 85% Efficiency
 
-Charge Period (10 AM - 2 PM, $60/MWh):
+Charge Period (11:30 AM-1:00 PM, -$10/MWh during solar crash):
 - Charge Amount = min(100 × 0.5, 400 - 0) = 50 MWh
-- Charge Cost = 50 MWh × $60/MWh = $3,000
+- Charge Cost = 50 MWh × -$10/MWh = -$500 (paid to consume)
 - Energy Stored = 0 + 50 = 50 MWh
 
-Discharge Period (5 PM - 9 PM, $150/MWh):
+Discharge Period (5 PM-7 PM, $180/MWh after solar drops):
 - Discharge Amount = min(100 × 0.5, 50 × 0.85) = min(50, 42.5) = 42.5 MWh
-- Discharge Revenue = 42.5 MWh × $150/MWh = $6,375
+- Discharge Revenue = 42.5 MWh × $180/MWh = $7,650
 - Energy Removed = 42.5 ÷ 0.85 = 50 MWh
 - Energy Stored = 50 - 50 = 0 MWh
 
 Daily Profit:
-- Daily Profit = $6,375 - $3,000 = $3,375
+- Daily Profit = $7,650 - (-$500) = $8,150
 
-TRADING WINDOW OPTIMIZATION
-===========================
+TRADING WINDOW OPTIMIZATION (SOLAR ERA)
+=======================================
 
 Optimal Charge Window:
-- Lowest average prices during the day
+- Lowest average prices during solar crash periods
+- Target 11:30 AM-1:00 PM for negative prices
 - Sufficient duration to fill battery capacity
 - Before peak demand periods
 
 Optimal Discharge Window:
-- Highest average prices during the day
-- Peak demand periods
-- After charge window completion
+- Highest average prices during evening peak
+- After solar drops and demand peaks
+- Morning ramp periods before solar peaks
 
-Profit Maximization Formula:
+Solar Crash Profit Maximization:
 - Max Profit = max(Discharge Price - Charge Price) × Energy × Efficiency
+- Charge Price can be negative during solar peak
+- Focus on duck curve dynamics
 
 DATA PROCESSING
 ===============
@@ -137,7 +197,8 @@ DATA PROCESSING
 
 Price Data Structure:
 - Timestamp: YYYY-MM-DD HH:MM
-- Price: $/MWh (2 decimal places)
+- Price: $/MWh (can be negative during solar peak)
+- Solar Intensity: 0-1 scale for solar generation
 
 Date Range:
 - Start Date = Current Date - Days Back
@@ -158,6 +219,11 @@ Efficiency Constraints:
 - Available Energy = Stored Energy × Efficiency
 - Energy Loss = Energy × (1 - Efficiency)
 
+Solar Constraints:
+- Solar generation only during daylight hours (6 AM-6 PM)
+- Seasonal solar intensity variations
+- Geographic solar penetration factors
+
 EXPORT DATA FORMAT
 ==================
 
@@ -173,30 +239,41 @@ Configuration Summary:
 - Discharge Window, [start]:00 - [end]:00
 - Simulation Period, [days] days
 
+Solar Analysis:
+- Hour, Avg Solar Intensity, Avg Price ($/MWh)
+- Solar Crash Impact, Price Reduction (%)
+
 KEY INSIGHTS
 ============
 
 Profit Drivers:
 1. Price Spread: Higher difference between charge and discharge prices
-2. Battery Size: Larger capacity = more energy arbitrage
-3. Efficiency: Higher efficiency = less energy loss
-4. Trading Windows: Optimal timing maximizes profit
+2. Solar Crash Opportunities: Negative prices during peak solar
+3. Battery Size: Larger capacity = more energy arbitrage
+4. Efficiency: Higher efficiency = less energy loss
+5. Trading Windows: Optimal timing maximizes profit
+6. Duck Curve Dynamics: Evening peak after solar drop
 
 Risk Factors:
 1. Price Volatility: Unpredictable price movements
-2. Battery Degradation: Reduced capacity over time
-3. Market Changes: Regulatory or structural changes
-4. Technical Issues: Battery or grid failures
+2. Solar Generation Variability: Weather-dependent solar output
+3. Battery Degradation: Reduced capacity over time
+4. Market Changes: Regulatory or structural changes
+5. Technical Issues: Battery or grid failures
+6. Solar Penetration Changes: Increasing solar adoption
 
 NOTES
 ======
 
 - All calculations assume 30-minute intervals
-- Prices are in $/MWh
+- Prices are in $/MWh (can be negative during solar peak)
 - Energy is in MWh
 - Power is in MW
 - Efficiency is expressed as decimal (0.85 for 85%)
 - Time windows are in 24-hour format (0-23)
 - All monetary values are in Australian dollars ($)
+- Solar intensity is on 0-1 scale
+- Solar crash effects are strongest in summer, weakest in winter
+- Negative prices occur during maximum solar penetration (11:30 AM-1:00 PM)
 
-This cheat sheet covers all essential calculations for battery arbitrage analysis. 
+This cheat sheet covers all essential calculations for battery arbitrage analysis including solar crash modeling and duck curve dynamics. 
