@@ -564,11 +564,11 @@ def main():
     
     with col1:
         charge_start = st.number_input("Charge Start (Hour)", 0, 23, 10)
-        charge_end = st.number_input("Charge End (Hour)", 0, 23, 14)
+        charge_end = st.number_input("Charge End (Hour)", 0, 23, 12)
     
     with col2:
-        discharge_start = st.number_input("Discharge Start (Hour)", 0, 23, 17)
-        discharge_end = st.number_input("Discharge End (Hour)", 0, 23, 21)
+        discharge_start = st.number_input("Discharge Start (Hour)", 0, 23, 18)
+        discharge_end = st.number_input("Discharge End (Hour)", 0, 23, 20)
     
     # Data source selection
     st.sidebar.subheader("Data Source")
@@ -742,7 +742,7 @@ def main():
                 st.markdown("## 📊 Generated Price Data (Demo)")
             
             # Create a sample of the price data for display
-            sample_df = df.head(48)  # Show first 24 hours (48 x 30-min intervals)
+            sample_df = df
             
             # Format for display
             display_price_df = sample_df.reset_index()
@@ -906,7 +906,7 @@ def main():
             
             # Calculate ROI and payback period (will be calculated later with correct investment amount)
             annual_profit = total_profit * (365 / len(results_df))  # Extrapolate to annual
-            total_investment_dollars = total_cost * 1000000  # Convert from millions to dollars
+            total_investment_dollars = total_cost * 1_000_000  # Convert from millions to dollars
             roi_percentage = (annual_profit / total_investment_dollars) * 100 if total_investment_dollars > 0 else 0
             payback_years = total_investment_dollars / annual_profit if annual_profit > 0 else float('inf')
             
