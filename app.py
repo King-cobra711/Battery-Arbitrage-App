@@ -178,7 +178,7 @@ def generate_qld_price_data(start_date, end_date):
 
 def simulate_arbitrage(df, battery_size_mw, battery_capacity_mwh, 
                       charge_start, charge_end, discharge_start, discharge_end,
-                      round_trip_efficiency):
+                      round_trip_efficiency, actual_power, actual_capacity):
     """
     Simulate battery arbitrage trading
     """
@@ -216,15 +216,19 @@ def simulate_arbitrage(df, battery_size_mw, battery_capacity_mwh,
         if len(charge_prices) == 0 or len(discharge_prices) == 0:
             continue
         
-        # Calculate optimal arbitrage
+        # Calculate optimal arbitrage (scaled for multiple batteries)
         total_charge_cost = 0
         total_discharge_revenue = 0
         energy_stored = 0
         
+        # Use actual system specifications (may differ from user inputs due to unit constraints)
+        total_battery_power = actual_power
+        total_battery_capacity = actual_capacity
+        
         # Charge during low price periods
         for _, row in day_data[charge_mask].iterrows():
-            if energy_stored < battery_capacity_mwh:
-                charge_amount = min(battery_size_mw * 0.5, battery_capacity_mwh - energy_stored)
+            if energy_stored < total_battery_capacity:
+                charge_amount = min(total_battery_power * 0.5, total_battery_capacity - energy_stored)
                 charge_cost = charge_amount * row['price']
                 total_charge_cost += charge_cost
                 energy_stored += charge_amount
@@ -232,7 +236,7 @@ def simulate_arbitrage(df, battery_size_mw, battery_capacity_mwh,
         # Discharge during high price periods
         for _, row in day_data[discharge_mask].iterrows():
             if energy_stored > 0:
-                discharge_amount = min(battery_size_mw * 0.5, energy_stored * efficiency)
+                discharge_amount = min(total_battery_power * 0.5, energy_stored * efficiency)
                 discharge_revenue = discharge_amount * row['price']
                 total_discharge_revenue += discharge_revenue
                 energy_stored -= discharge_amount / efficiency
@@ -344,9 +348,13 @@ def recommend_optimal_windows(df, battery_size_mw, battery_capacity_mwh, round_t
                 energy_transferred = min(charge_block['total_energy'], discharge_block['total_energy'])
                 potential_profit = price_spread * energy_transferred
                 
+                # Calculate proper end hour (handle wrap-around)
+                charge_end_hour = (int(charge_block['end_hour']) + 1) % 24
+                discharge_end_hour = (int(discharge_block['end_hour']) + 1) % 24
+                
                 arbitrage_opportunities.append({
-                    'charge_window': f"{int(charge_block['start_hour']):02d}:00-{int(charge_block['end_hour']):02d}:00 ({charge_hours}h)",
-                    'discharge_window': f"{int(discharge_block['start_hour']):02d}:00-{int(discharge_block['end_hour']):02d}:00 ({discharge_hours}h)",
+                    'charge_window': f"{int(charge_block['start_hour']):02d}:00-{charge_end_hour:02d}:00 ({charge_hours}h)",
+                    'discharge_window': f"{int(discharge_block['start_hour']):02d}:00-{discharge_end_hour:02d}:00 ({discharge_hours}h)",
                     'charge_price': charge_block['avg_price'],
                     'discharge_price': discharge_block['avg_price'],
                     'price_spread': price_spread,
@@ -461,24 +469,93 @@ def main():
         "Battery Power (MW)", 
         min_value=1.0, 
         max_value=1000.0, 
-        value=100.0, 
-        step=10.0
+        value=25.0, 
+        step=5.0
     )
     
     battery_capacity_mwh = st.sidebar.number_input(
         "Battery Capacity (MWh)", 
         min_value=1.0, 
         max_value=10000.0, 
-        value=400.0, 
-        step=50.0
+        value=50.0, 
+        step=10.0
     )
+    
+    # Battery unit specifications
+    st.sidebar.subheader("Battery Unit Specifications")
+    
+    # Battery unit type selection
+    battery_unit_type = st.sidebar.selectbox(
+        "Battery Unit Type",
+        ["Tesla Megapack 2 XL", "Custom Battery Unit"],
+        help="Select a predefined battery unit or define custom specifications"
+    )
+    
+    if battery_unit_type == "Tesla Megapack 2 XL":
+        unit_capacity_mwh = 3.9
+        unit_power_mw = 1.9
+        unit_cost_millions = 2.45  # Average of $2.3M-$2.6M
+        st.sidebar.info(f"📦 Tesla Megapack 2 XL: {unit_capacity_mwh} MWh, {unit_power_mw} MW")
+    else:
+        unit_capacity_mwh = st.sidebar.number_input(
+            "Unit Capacity (MWh)", 
+            min_value=0.1, 
+            max_value=100.0, 
+            value=3.9, 
+            step=0.1,
+            help="Storage capacity per battery unit"
+        )
+        unit_power_mw = st.sidebar.number_input(
+            "Unit Power (MW)", 
+            min_value=0.1, 
+            max_value=100.0, 
+            value=1.9, 
+            step=0.1,
+            help="Power rating per battery unit"
+        )
+        unit_cost_millions = st.sidebar.number_input(
+            "Unit Cost (Millions $)", 
+            min_value=0.1, 
+            max_value=10.0, 
+            value=2.45, 
+            step=0.1,
+            help="Installed cost per battery unit in millions"
+        )
+    
+    # Calculate number of units needed
+    num_units_capacity = max(1, int(battery_capacity_mwh / unit_capacity_mwh))
+    num_units_power = max(1, int(battery_size_mw / unit_power_mw))
+    num_batteries = max(num_units_capacity, num_units_power)
+    
+    # Calculate actual system specifications
+    actual_capacity = num_batteries * unit_capacity_mwh
+    actual_power = num_batteries * unit_power_mw
+    total_cost = num_batteries * unit_cost_millions
+    
+    st.sidebar.success(f"🔢 **{num_batteries} units** required")
+    st.sidebar.info(f"📊 **Actual System**: {actual_power:.1f} MW / {actual_capacity:.1f} MWh")
+    st.sidebar.warning(f"💰 **Total Cost**: ${total_cost:.1f}M")
+    
+    # Show cost breakdown
+    with st.sidebar.expander("💰 Cost Analysis"):
+        st.markdown(f"""
+        **Investment Breakdown:**
+        - **Units Required**: {num_batteries} {battery_unit_type}
+        - **Unit Cost**: ${unit_cost_millions:.2f}M per unit
+        - **Total Investment**: ${total_cost:.1f}M
+        - **Actual Power**: {actual_power:.1f} MW
+        - **Actual Capacity**: {actual_capacity:.1f} MWh
+        
+        **Cost per MW**: ${total_cost/actual_power:.2f}M/MW
+        **Cost per MWh**: ${total_cost/actual_capacity:.2f}M/MWh
+        """)
     
     round_trip_efficiency = st.sidebar.slider(
         "Round-trip Efficiency (%)", 
         min_value=70, 
         max_value=95, 
-        value=85, 
-        step=5
+        value=88, 
+        step=1
     )
     
     # Trading windows
@@ -564,7 +641,7 @@ def main():
                         result = simulate_arbitrage(
                             df, battery_size_mw, battery_capacity_mwh,
                             charge_start, charge_end, discharge_start, discharge_end,
-                            round_trip_efficiency
+                            round_trip_efficiency, actual_power, actual_capacity
                         )
                         
                         if result is not None:
@@ -593,7 +670,7 @@ def main():
                         result = simulate_arbitrage(
                             df, battery_size_mw, battery_capacity_mwh,
                             charge_start, charge_end, discharge_start, discharge_end,
-                            round_trip_efficiency
+                            round_trip_efficiency, actual_power, actual_capacity
                         )
                         
                         if result is not None:
@@ -622,7 +699,7 @@ def main():
                         result = simulate_arbitrage(
                             df, battery_size_mw, battery_capacity_mwh,
                             charge_start, charge_end, discharge_start, discharge_end,
-                            round_trip_efficiency
+                            round_trip_efficiency, actual_power, actual_capacity
                         )
                         
                         if result is not None:
@@ -641,7 +718,7 @@ def main():
                     result = simulate_arbitrage(
                         df, battery_size_mw, battery_capacity_mwh,
                         charge_start, charge_end, discharge_start, discharge_end,
-                        round_trip_efficiency
+                        round_trip_efficiency, actual_power, actual_capacity
                     )
                     
                     if result is not None:
@@ -827,6 +904,12 @@ def main():
             max_daily_profit = results_df['profit'].max()
             min_daily_profit = results_df['profit'].min()
             
+            # Calculate ROI and payback period (will be calculated later with correct investment amount)
+            annual_profit = total_profit * (365 / len(results_df))  # Extrapolate to annual
+            total_investment_dollars = total_cost * 1000000  # Convert from millions to dollars
+            roi_percentage = (annual_profit / total_investment_dollars) * 100 if total_investment_dollars > 0 else 0
+            payback_years = total_investment_dollars / annual_profit if annual_profit > 0 else float('inf')
+            
 
             
             with col1:
@@ -836,10 +919,10 @@ def main():
                 st.metric("Avg Daily Profit", f"${avg_daily_profit:,.0f}")
             
             with col3:
-                st.metric("Max Daily Profit", f"${max_daily_profit:,.0f}")
+                st.metric("ROI", f"{roi_percentage:.1f}%")
             
             with col4:
-                st.metric("Min Daily Profit", f"${min_daily_profit:,.0f}")
+                st.metric("Payback Period", f"{payback_years:.1f} years" if payback_years != float('inf') else "Never")
             
             # Charts
             st.markdown("### 📈 Profit Analysis")
@@ -886,11 +969,52 @@ def main():
             
             st.dataframe(display_df, use_container_width=True)
             
+            # ROI Analysis
+            st.markdown("### 💰 ROI Analysis")
+            
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.metric("Annualized Profit", f"${annual_profit:,.0f}")
+            
+            with col2:
+                st.metric("Total Investment", f"${total_investment_dollars:,.0f}")
+            
+            with col3:
+                st.metric("Investment Efficiency", f"${total_cost/actual_power:.2f}M/MW")
+            
+            # ROI breakdown
+            roi_data = {
+                'Metric': [
+                    'Total Investment Cost',
+                    'Annualized Profit',
+                    'ROI (%)',
+                    'Payback Period (Years)',
+                    'Daily Profit Average',
+                    'Profit per MW per Day',
+                    'Profit per MWh per Day'
+                ],
+                'Value': [
+                    f"${total_cost:.1f}M",
+                    f"${annual_profit:,.0f}",
+                    f"{roi_percentage:.1f}%",
+                    f"{payback_years:.1f} years" if payback_years != float('inf') else "Never",
+                    f"${avg_daily_profit:,.0f}",
+                    f"${avg_daily_profit/actual_power:.0f}",
+                    f"${avg_daily_profit/actual_capacity:.0f}"
+                ]
+            }
+            
+            roi_df = pd.DataFrame(roi_data)
+            st.dataframe(roi_df, use_container_width=True)
+            
             # Export functionality
             st.markdown("### 💾 Export Results")
             
             # Create proper CSV structure
             csv_buffer = io.StringIO()
+            
+            # Use the ROI calculations already computed above
             
             # Create summary statistics as a proper CSV table
             summary_data = {
@@ -901,16 +1025,24 @@ def main():
                     'Minimum Daily Profit',
                     'Number of Trading Days',
                     'Total Charge Cost',
-                    'Total Discharge Revenue'
+                    'Total Discharge Revenue',
+                    'Annualized Profit',
+                    'Total Investment Cost',
+                    'ROI (%)',
+                    'Payback Period (Years)'
                 ],
                 'Value': [
-                    f"${results_df['profit'].sum():.0f}",
+                    f"${total_profit:.0f}",
                     f"${results_df['profit'].mean():.0f}",
                     f"${results_df['profit'].max():.0f}",
                     f"${results_df['profit'].min():.0f}",
                     str(len(results_df)),
                     f"${results_df['charge_cost'].sum():.0f}",
-                    f"${results_df['discharge_revenue'].sum():.0f}"
+                    f"${results_df['discharge_revenue'].sum():.0f}",
+                    f"${annual_profit:.0f}",
+                    f"${total_investment_dollars:,.0f}",
+                    f"{roi_percentage:.1f}%",
+                    f"{payback_years:.1f}" if payback_years != float('inf') else "Never"
                 ]
             }
             
@@ -989,20 +1121,34 @@ def main():
                     'Parameter': [
                         'Battery Power (MW)',
                         'Battery Capacity (MWh)',
+                        'Number of Batteries',
+                        'Total System Power (MW)',
+                        'Total System Capacity (MWh)',
                         'Round-trip Efficiency (%)',
                         'Charge Window',
                         'Discharge Window',
                         'Data Source',
-                        'Analysis Period'
+                        'Analysis Period',
+                        'Total Investment Cost',
+                        'Annualized Profit',
+                        'ROI (%)',
+                        'Payback Period (Years)'
                     ],
                     'Value': [
-                        f"{battery_size_mw} MW",
-                        f"{battery_capacity_mwh} MWh",
+                        f"{battery_size_mw} MW (Target)",
+                        f"{battery_capacity_mwh} MWh (Target)",
+                        f"{num_batteries} {battery_unit_type}",
+                        f"{actual_power:.1f} MW (Actual)",
+                        f"{actual_capacity:.1f} MWh (Actual)",
                         f"{round_trip_efficiency}%",
                         f"{charge_start}:00 - {charge_end}:00",
                         f"{discharge_start}:00 - {discharge_end}:00",
                         "Real Market Data (CSV)",
-                        f"{st.session_state.current_start_date} to {st.session_state.current_end_date}"
+                        f"{st.session_state.current_start_date} to {st.session_state.current_end_date}",
+                        f"${total_cost:.1f}M",
+                        f"${annual_profit:,.0f}",
+                        f"{roi_percentage:.1f}%",
+                        f"{payback_years:.1f} years" if payback_years != float('inf') else "Never"
                     ]
                 }
             else:
@@ -1056,18 +1202,24 @@ def main():
                     'Parameter': [
                         'Battery Power (MW)',
                         'Battery Capacity (MWh)',
+                        'Number of Batteries',
+                        'Total System Power (MW)',
+                        'Total System Capacity (MWh)',
                         'Optimal Charge Hours',
                         'Optimal Discharge Hours',
                         'Full Charge Time',
                         'Energy Transfer per Cycle'
                     ],
                     'Value': [
-                        f"{recommendations['battery_power_mw']} MW",
-                        f"{recommendations['battery_capacity_mwh']} MWh",
+                        f"{recommendations['battery_power_mw']} MW (Target)",
+                        f"{recommendations['battery_capacity_mwh']} MWh (Target)",
+                        f"{num_batteries} {battery_unit_type}",
+                        f"{actual_power:.1f} MW (Actual)",
+                        f"{actual_capacity:.1f} MWh (Actual)",
                         f"{recommendations['optimal_charge_hours']} hours",
                         f"{recommendations['optimal_discharge_hours']} hours",
                         f"{recommendations['optimal_charge_hours']} hours",
-                        f"{recommendations['battery_power_mw'] * recommendations['optimal_charge_hours']} MWh"
+                        f"{actual_power * recommendations['optimal_charge_hours']:.1f} MWh"
                     ]
                 }
                 battery_df = pd.DataFrame(battery_info)
