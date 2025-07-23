@@ -253,7 +253,7 @@ def simulate_arbitrage(df, battery_size_mw, battery_capacity_mwh,
 
 def recommend_optimal_windows(df, battery_size_mw, battery_capacity_mwh, round_trip_efficiency):
     """
-    Analyze price patterns and recommend optimal 2-hour charge/discharge windows for OTC hedging
+    Analyze price patterns and recommend optimal charge/discharge windows based on battery capacity
     """
     if df is None or df.empty:
         return None
@@ -261,46 +261,72 @@ def recommend_optimal_windows(df, battery_size_mw, battery_capacity_mwh, round_t
     # Convert efficiency to decimal
     efficiency = round_trip_efficiency / 100
     
+    # Calculate optimal operating hours based on battery capacity
+    # Time to full charge = Capacity (MWh) / Power (MW)
+    optimal_charge_hours = battery_capacity_mwh / battery_size_mw
+    optimal_discharge_hours = optimal_charge_hours * efficiency  # Account for efficiency loss
+    
+    # Round to nearest hour for practical recommendations
+    charge_hours = max(1, round(optimal_charge_hours))
+    discharge_hours = max(1, round(optimal_discharge_hours))
+    
     # Group by hour and calculate average prices
-    df['hour'] = df.index.hour
+    df['hour'] = df.index.hour  # type: ignore
     hourly_prices = df.groupby('hour')['price'].agg(['mean', 'std', 'min', 'max']).reset_index()
     
-    # Find optimal 2-hour charge blocks (lowest prices)
+    # Find optimal charge blocks (lowest prices for required hours)
     best_charge_blocks = []
     
-    # Get all possible 2-hour consecutive blocks
+    # Get all possible consecutive hour blocks of the required length
     for i in range(24):
-        hour1 = i
-        hour2 = (i + 1) % 24  # Handle wrap-around from 23 to 0
+        hours = []
+        prices = []
         
-        # Get the two hours' average prices
-        price1 = hourly_prices[hourly_prices['hour'] == hour1]['mean'].iloc[0]
-        price2 = hourly_prices[hourly_prices['hour'] == hour2]['mean'].iloc[0]
+        # Get consecutive hours (handle wrap-around)
+        for j in range(charge_hours):
+            hour = (i + j) % 24
+            price = hourly_prices[hourly_prices['hour'] == hour]['mean'].iloc[0]
+            hours.append(hour)
+            prices.append(price)
         
-        avg_price = (price1 + price2) / 2
+        avg_price = sum(prices) / len(prices)
         
         best_charge_blocks.append({
-            'start_hour': hour1,
-            'end_hour': hour2,
+            'start_hour': hours[0],
+            'end_hour': hours[-1],
+            'hours': charge_hours,
             'avg_price': avg_price,
-            'hour1_price': price1,
-            'hour2_price': price2
+            'hour_prices': prices,
+            'total_energy': battery_size_mw * charge_hours  # MWh that can be stored
         })
     
     # Sort by average price (lowest first for charging)
     best_charge_blocks.sort(key=lambda x: x['avg_price'])
     
-    # Find optimal 2-hour discharge blocks (highest prices)
+    # Find optimal discharge blocks (highest prices for required hours)
     best_discharge_blocks = []
     
-    # Use the same blocks but sort by highest price
-    for block in best_charge_blocks:
+    # Get all possible consecutive hour blocks of the required length
+    for i in range(24):
+        hours = []
+        prices = []
+        
+        # Get consecutive hours (handle wrap-around)
+        for j in range(discharge_hours):
+            hour = (i + j) % 24
+            price = hourly_prices[hourly_prices['hour'] == hour]['mean'].iloc[0]
+            hours.append(hour)
+            prices.append(price)
+        
+        avg_price = sum(prices) / len(prices)
+        
         best_discharge_blocks.append({
-            'start_hour': block['start_hour'],
-            'end_hour': block['end_hour'],
-            'avg_price': block['avg_price'],
-            'hour1_price': block['hour1_price'],
-            'hour2_price': block['hour2_price']
+            'start_hour': hours[0],
+            'end_hour': hours[-1],
+            'hours': discharge_hours,
+            'avg_price': avg_price,
+            'hour_prices': prices,
+            'total_energy': battery_size_mw * discharge_hours * efficiency  # MWh that can be discharged
         })
     
     # Sort by average price (highest first for discharging)
@@ -312,14 +338,19 @@ def recommend_optimal_windows(df, battery_size_mw, battery_capacity_mwh, round_t
         for discharge_block in best_discharge_blocks[:3]:  # Top 3 discharge blocks
             if charge_block['start_hour'] != discharge_block['start_hour']:  # Avoid same time
                 price_spread = discharge_block['avg_price'] - charge_block['avg_price']
-                potential_profit = price_spread * battery_size_mw * 2 * efficiency  # 2 hours
+                
+                # Calculate potential profit based on actual energy transfer
+                # Energy discharged = min(charge_energy, discharge_energy)
+                energy_transferred = min(charge_block['total_energy'], discharge_block['total_energy'])
+                potential_profit = price_spread * energy_transferred
                 
                 arbitrage_opportunities.append({
-                    'charge_window': f"{int(charge_block['start_hour']):02d}:00-{int(charge_block['end_hour']):02d}:00",
-                    'discharge_window': f"{int(discharge_block['start_hour']):02d}:00-{int(discharge_block['end_hour']):02d}:00",
+                    'charge_window': f"{int(charge_block['start_hour']):02d}:00-{int(charge_block['end_hour']):02d}:00 ({charge_hours}h)",
+                    'discharge_window': f"{int(discharge_block['start_hour']):02d}:00-{int(discharge_block['end_hour']):02d}:00 ({discharge_hours}h)",
                     'charge_price': charge_block['avg_price'],
                     'discharge_price': discharge_block['avg_price'],
                     'price_spread': price_spread,
+                    'energy_transferred': energy_transferred,
                     'potential_daily_profit': potential_profit,
                     'charge_rank': best_charge_blocks.index(charge_block) + 1,
                     'discharge_rank': best_discharge_blocks.index(discharge_block) + 1
@@ -332,7 +363,11 @@ def recommend_optimal_windows(df, battery_size_mw, battery_capacity_mwh, round_t
         'hourly_prices': hourly_prices,
         'best_charge_blocks': best_charge_blocks[:5],  # Top 5
         'best_discharge_blocks': best_discharge_blocks[:5],  # Top 5
-        'arbitrage_opportunities': arbitrage_opportunities[:5]  # Top 5
+        'arbitrage_opportunities': arbitrage_opportunities[:5],  # Top 5
+        'optimal_charge_hours': charge_hours,
+        'optimal_discharge_hours': discharge_hours,
+        'battery_capacity_mwh': battery_capacity_mwh,
+        'battery_power_mw': battery_size_mw
     }
 
 def parse_real_market_data(uploaded_file):
@@ -792,17 +827,19 @@ def main():
             max_daily_profit = results_df['profit'].max()
             min_daily_profit = results_df['profit'].min()
             
+
+            
             with col1:
-                st.metric("Total Profit", f"${total_profit:,.2f}")
+                st.metric("Total Profit", f"${total_profit:,.0f}")
             
             with col2:
-                st.metric("Avg Daily Profit", f"${avg_daily_profit:,.2f}")
+                st.metric("Avg Daily Profit", f"${avg_daily_profit:,.0f}")
             
             with col3:
-                st.metric("Max Daily Profit", f"${max_daily_profit:,.2f}")
+                st.metric("Max Daily Profit", f"${max_daily_profit:,.0f}")
             
             with col4:
-                st.metric("Min Daily Profit", f"${min_daily_profit:,.2f}")
+                st.metric("Min Daily Profit", f"${min_daily_profit:,.0f}")
             
             # Charts
             st.markdown("### 📈 Profit Analysis")
@@ -852,13 +889,92 @@ def main():
             # Export functionality
             st.markdown("### 💾 Export Results")
             
-            # Create CSV for download
+            # Create proper CSV structure
             csv_buffer = io.StringIO()
+            
+            # Create summary statistics as a proper CSV table
+            summary_data = {
+                'Metric': [
+                    'Total Profit',
+                    'Average Daily Profit', 
+                    'Maximum Daily Profit',
+                    'Minimum Daily Profit',
+                    'Number of Trading Days',
+                    'Total Charge Cost',
+                    'Total Discharge Revenue'
+                ],
+                'Value': [
+                    f"${results_df['profit'].sum():.0f}",
+                    f"${results_df['profit'].mean():.0f}",
+                    f"${results_df['profit'].max():.0f}",
+                    f"${results_df['profit'].min():.0f}",
+                    str(len(results_df)),
+                    f"${results_df['charge_cost'].sum():.0f}",
+                    f"${results_df['discharge_revenue'].sum():.0f}"
+                ]
+            }
+            
+            # Create configuration data as CSV table
+            if data_source == "Upload Real Market Data":
+                config_data = {
+                    'Parameter': [
+                        'Battery Power (MW)',
+                        'Battery Capacity (MWh)',
+                        'Round-trip Efficiency (%)',
+                        'Charge Window',
+                        'Discharge Window',
+                        'Data Source',
+                        'Analysis Period'
+                    ],
+                    'Value': [
+                        f"{battery_size_mw} MW",
+                        f"{battery_capacity_mwh} MWh",
+                        f"{round_trip_efficiency}%",
+                        f"{charge_start}:00 - {charge_end}:00",
+                        f"{discharge_start}:00 - {discharge_end}:00",
+                        "Real Market Data (CSV)",
+                        f"{st.session_state.current_start_date} to {st.session_state.current_end_date}"
+                    ]
+                }
+            else:
+                config_data = {
+                    'Parameter': [
+                        'Battery Power (MW)',
+                        'Battery Capacity (MWh)',
+                        'Round-trip Efficiency (%)',
+                        'Charge Window',
+                        'Discharge Window',
+                        'Data Source',
+                        'Simulation Period'
+                    ],
+                    'Value': [
+                        f"{battery_size_mw} MW",
+                        f"{battery_capacity_mwh} MWh",
+                        f"{round_trip_efficiency}%",
+                        f"{charge_start}:00 - {charge_end}:00",
+                        f"{discharge_start}:00 - {discharge_end}:00",
+                        "Simulated Data",
+                        f"{days_back} days"
+                    ]
+                }
+            
+            # Write configuration as CSV table
+            config_df = pd.DataFrame(config_data)
+            config_df.to_csv(csv_buffer, index=False)
+            csv_buffer.write("\n")
+            
+            # Write summary statistics as CSV table
+            summary_df = pd.DataFrame(summary_data)
+            summary_df.to_csv(csv_buffer, index=False)
+            csv_buffer.write("\n")
+            
+            # Write daily results as CSV table
             results_df.to_csv(csv_buffer, index=False)
+            
             csv_str = csv_buffer.getvalue()
             
             st.download_button(
-                label="📥 Download CSV",
+                label="📥 Download CSV with Configuration",
                 data=csv_str,
                 file_name=f"battery_arbitrage_results_{st.session_state.current_start_date}_{st.session_state.current_end_date}.csv",
                 mime="text/csv"
@@ -934,8 +1050,31 @@ def main():
                 
                 st.dataframe(hourly_df, use_container_width=True)
                 
+                # Show battery optimization info
+                st.markdown("#### 🔋 Battery Optimization Analysis")
+                battery_info = {
+                    'Parameter': [
+                        'Battery Power (MW)',
+                        'Battery Capacity (MWh)',
+                        'Optimal Charge Hours',
+                        'Optimal Discharge Hours',
+                        'Full Charge Time',
+                        'Energy Transfer per Cycle'
+                    ],
+                    'Value': [
+                        f"{recommendations['battery_power_mw']} MW",
+                        f"{recommendations['battery_capacity_mwh']} MWh",
+                        f"{recommendations['optimal_charge_hours']} hours",
+                        f"{recommendations['optimal_discharge_hours']} hours",
+                        f"{recommendations['optimal_charge_hours']} hours",
+                        f"{recommendations['battery_power_mw'] * recommendations['optimal_charge_hours']} MWh"
+                    ]
+                }
+                battery_df = pd.DataFrame(battery_info)
+                st.dataframe(battery_df, use_container_width=True)
+                
                 # Show best charge blocks
-                st.markdown("#### 🔋 Best 2-Hour Charge Windows (Lowest Prices)")
+                st.markdown(f"#### 🔋 Best {recommendations['optimal_charge_hours']}-Hour Charge Windows (Lowest Prices)")
                 charge_blocks = recommendations['best_charge_blocks']
                 if charge_blocks:
                     charge_data = []
@@ -943,16 +1082,17 @@ def main():
                         charge_data.append({
                             'Rank': i,
                             'Window': f"{int(block['start_hour']):02d}:00-{int(block['end_hour']):02d}:00",
+                            'Hours': block['hours'],
                             'Avg Price ($/MWh)': f"${block['avg_price']:.2f}",
-                            'Hour 1 Price': f"${block['hour1_price']:.2f}",
-                            'Hour 2 Price': f"${block['hour2_price']:.2f}"
+                            'Energy Stored (MWh)': f"{block['total_energy']:.1f}",
+                            'Hour Prices': ', '.join([f"${p:.1f}" for p in block['hour_prices']])
                         })
                     
                     charge_df = pd.DataFrame(charge_data)
                     st.dataframe(charge_df, use_container_width=True)
                 
                 # Show best discharge blocks
-                st.markdown("#### ⚡ Best 2-Hour Discharge Windows (Highest Prices)")
+                st.markdown(f"#### ⚡ Best {recommendations['optimal_discharge_hours']}-Hour Discharge Windows (Highest Prices)")
                 discharge_blocks = recommendations['best_discharge_blocks']
                 if discharge_blocks:
                     discharge_data = []
@@ -960,16 +1100,17 @@ def main():
                         discharge_data.append({
                             'Rank': i,
                             'Window': f"{int(block['start_hour']):02d}:00-{int(block['end_hour']):02d}:00",
+                            'Hours': block['hours'],
                             'Avg Price ($/MWh)': f"${block['avg_price']:.2f}",
-                            'Hour 1 Price': f"${block['hour1_price']:.2f}",
-                            'Hour 2 Price': f"${block['hour2_price']:.2f}"
+                            'Energy Discharged (MWh)': f"{block['total_energy']:.1f}",
+                            'Hour Prices': ', '.join([f"${p:.1f}" for p in block['hour_prices']])
                         })
                     
                     discharge_df = pd.DataFrame(discharge_data)
                     st.dataframe(discharge_df, use_container_width=True)
                 
                 # Show arbitrage opportunities
-                st.markdown("#### 💰 Top Arbitrage Opportunities (2-Hour Blocks)")
+                st.markdown("#### 💰 Top Arbitrage Opportunities (Battery-Optimized)")
                 opportunities = recommendations['arbitrage_opportunities']
                 if opportunities:
                     opp_data = []
@@ -981,6 +1122,7 @@ def main():
                             'Charge Price ($/MWh)': f"${opp['charge_price']:.2f}",
                             'Discharge Price ($/MWh)': f"${opp['discharge_price']:.2f}",
                             'Price Spread ($/MWh)': f"${opp['price_spread']:.2f}",
+                            'Energy Transferred (MWh)': f"{opp['energy_transferred']:.1f}",
                             'Potential Daily Profit ($)': f"${opp['potential_daily_profit']:,.2f}"
                         })
                     
@@ -991,45 +1133,57 @@ def main():
                     if opportunities:
                         best_opp = opportunities[0]
                         st.success(f"**🎯 Recommended OTC Strategy:** Charge {best_opp['charge_window']}, Discharge {best_opp['discharge_window']}")
-                        st.info(f"**Expected Daily Profit:** ${best_opp['potential_daily_profit']:,.2f} | **Price Spread:** ${best_opp['price_spread']:.2f}/MWh")
+                        st.info(f"**Expected Daily Profit:** ${best_opp['potential_daily_profit']:,.2f} | **Price Spread:** ${best_opp['price_spread']:.2f}/MWh | **Energy:** {best_opp['energy_transferred']:.1f} MWh")
                 
                 # Show explanation
-                with st.expander("ℹ️ OTC Hedging Strategy Explanation"):
-                    st.markdown("""
-                    **OTC (Over-The-Counter) Hedging Strategy:**
+                with st.expander("ℹ️ Battery-Optimized OTC Hedging Strategy"):
+                    st.markdown(f"""
+                    **Battery-Optimized OTC Hedging Strategy:**
                     
-                    This analysis identifies the most profitable 2-hour blocks for battery arbitrage based on historical price patterns including solar crash effects:
+                    This analysis identifies the most profitable charge/discharge windows based on your battery's actual capacity and power rating:
+                    
+                    **Battery Specifications:**
+                    - **Power**: {recommendations['battery_power_mw']} MW
+                    - **Capacity**: {recommendations['battery_capacity_mwh']} MWh
+                    - **Optimal Charge Time**: {recommendations['optimal_charge_hours']} hours (to reach full capacity)
+                    - **Optimal Discharge Time**: {recommendations['optimal_discharge_hours']} hours (accounting for efficiency losses)
                     
                     **Charge Strategy (Solar Crash Era):**
-                    - Target the lowest average price 2-hour periods
-                    - Focus on midday solar crash periods (10 AM-4 PM)
-                    - Consider overnight/off-peak periods
+                    - Target the lowest average price {recommendations['optimal_charge_hours']}-hour periods
+                    - Focus on midday solar crash periods (10 AM-4 PM) for maximum energy storage
+                    - Consider overnight/off-peak periods for longer charging windows
                     - Account for seasonal solar intensity variations
+                    - **Energy Goal**: Store {recommendations['battery_power_mw'] * recommendations['optimal_charge_hours']} MWh per cycle
                     
                     **Discharge Strategy (Duck Curve Era):**
-                    - Target the highest average price 2-hour periods
-                    - Focus on evening peak periods (5-8 PM) when solar drops
+                    - Target the highest average price {recommendations['optimal_discharge_hours']}-hour periods
+                    - Focus on evening peak periods (5-8 PM) when solar drops and demand peaks
                     - Consider morning ramp periods (6-9 AM) before solar peaks
                     - Maximize energy sales revenue during high-demand periods
+                    - **Energy Goal**: Discharge {recommendations['battery_power_mw'] * recommendations['optimal_discharge_hours'] * (round_trip_efficiency/100):.1f} MWh per cycle
                     
                     **Solar Crash Arbitrage Opportunities:**
-                    - **Charge during solar peak**: Buy low during midday solar generation
+                    - **Charge during solar peak**: Buy low during midday solar generation (including negative prices)
                     - **Discharge during evening peak**: Sell high when solar drops and demand peaks
                     - **Seasonal adjustments**: Stronger solar effects in summer
                     - **Weekend patterns**: Different solar/demand dynamics
+                    - **Full capacity utilization**: {recommendations['optimal_charge_hours']}-hour charge windows maximize energy storage
                     
                     **Arbitrage Opportunities:**
-                    - Ranked by potential daily profit
-                    - Calculated using: (Discharge Price - Charge Price) × Power × Hours × Efficiency
-                    - Considers battery power constraints and efficiency losses
+                    - Ranked by potential daily profit based on actual energy transfer
+                    - Calculated using: (Discharge Price - Charge Price) × Energy Transferred
+                    - **Energy Transfer**: Limited by battery capacity and efficiency constraints
                     - Accounts for solar crash price depression effects
+                    - Optimized for your specific battery specifications
                     
                     **OTC Contract Structure:**
-                    - Fixed 2-hour blocks for simplicity
+                    - **{recommendations['optimal_charge_hours']}-hour charge blocks** for full capacity utilization
+                    - **{recommendations['optimal_discharge_hours']}-hour discharge blocks** accounting for efficiency
                     - Contiguous time windows for operational ease
                     - Based on average historical prices including solar effects
                     - Suitable for forward contract negotiations
                     - Adapts to duck curve dynamics
+                    - **Battery starts at 0 capacity** for each daily cycle
                     """)
     
     # Instructions (always show when no simulation has been run)
