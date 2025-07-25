@@ -349,12 +349,17 @@ def recommend_optimal_windows(df, battery_size_mw, battery_capacity_mwh, round_t
                 potential_profit = price_spread * energy_transferred
                 
                 # Calculate proper end hour (handle wrap-around)
-                charge_end_hour = (int(charge_block['end_hour']) + 1) % 24
-                discharge_end_hour = (int(discharge_block['end_hour']) + 1) % 24
+                # For multi-hour blocks, end hour should be start_hour + hours
+                charge_end_hour = (int(charge_block['start_hour']) + charge_hours) % 24
+                discharge_end_hour = (int(discharge_block['start_hour']) + discharge_hours) % 24
+                
+                # Format the window display properly
+                charge_window_display = f"{int(charge_block['start_hour']):02d}:00-{charge_end_hour:02d}:00 ({charge_hours}h)"
+                discharge_window_display = f"{int(discharge_block['start_hour']):02d}:00-{discharge_end_hour:02d}:00 ({discharge_hours}h)"
                 
                 arbitrage_opportunities.append({
-                    'charge_window': f"{int(charge_block['start_hour']):02d}:00-{charge_end_hour:02d}:00 ({charge_hours}h)",
-                    'discharge_window': f"{int(discharge_block['start_hour']):02d}:00-{discharge_end_hour:02d}:00 ({discharge_hours}h)",
+                    'charge_window': charge_window_display,
+                    'discharge_window': discharge_window_display,
                     'charge_price': charge_block['avg_price'],
                     'discharge_price': discharge_block['avg_price'],
                     'price_spread': price_spread,
@@ -381,32 +386,40 @@ def recommend_optimal_windows(df, battery_size_mw, battery_capacity_mwh, round_t
 def parse_real_market_data(uploaded_file):
     """
     Parse real market data CSV file and convert to the app's expected format
+    Handles 5-minute interval data and converts to 30-minute intervals
     """
     try:
         # Read the CSV file
         df = pd.read_csv(uploaded_file)
         
-        # Check if it has the expected columns
-        if 'date' not in df.columns or 'Price - AUD/MWh' not in df.columns:
-            st.error("❌ CSV file must contain 'date' and 'Price - AUD/MWh' columns")
+        # Check if it has the expected columns for the new format
+        if 'SETTLEMENTDATE' not in df.columns or 'RRP' not in df.columns:
+            st.error("❌ CSV file must contain 'SETTLEMENTDATE' and 'RRP' columns")
             return None
         
-        # Convert date column to datetime
-        df['timestamp'] = pd.to_datetime(df['date'])
+        # Convert settlement date to datetime
+        df['timestamp'] = pd.to_datetime(df['SETTLEMENTDATE'])
         
-        # Extract price data
-        price_df = df[['timestamp', 'Price - AUD/MWh']].copy()
+        # Extract price data (RRP = Regional Reference Price)
+        price_df = df[['timestamp', 'RRP']].copy()
         price_df.columns = ['timestamp', 'price']
         
         # Set timestamp as index
         price_df.set_index('timestamp', inplace=True)
         price_df.sort_index(inplace=True)
         
+        # Convert 5-minute intervals to 30-minute intervals
+        # Resample to 30-minute intervals and take the mean
+        price_df_30min = price_df.resample('30T').mean()
+        
+        # Remove any NaN values that might occur from incomplete periods
+        price_df_30min = price_df_30min.dropna()
+        
         # Add solar intensity column (estimate based on time of day for real data)
-        price_df['solar_intensity'] = 0.0
+        price_df_30min['solar_intensity'] = 0.0
         
         # Estimate solar intensity based on hour of day
-        for idx in price_df.index:
+        for idx in price_df_30min.index:
             hour = idx.hour  # type: ignore
             if 6 <= hour <= 18:  # Daylight hours
                 if hour < 10:  # Early morning ramp
@@ -431,19 +444,113 @@ def parse_real_market_data(uploaded_file):
                 else:  # Spring
                     solar_intensity *= 1.1
                 
-                price_df.loc[idx, 'solar_intensity'] = solar_intensity
+                price_df_30min.loc[idx, 'solar_intensity'] = solar_intensity
         
-        st.success(f"✅ Successfully loaded {len(price_df)} real market data points")
-        st.write(f"📈 Price range: ${price_df['price'].min():.2f} - ${price_df['price'].max():.2f}/MWh")
-        st.write(f"📊 Average price: ${price_df['price'].mean():.2f}/MWh")
-        st.write(f"📅 Date range: {price_df.index.min()} to {price_df.index.max()}")
-        st.info("💡 Using real QLD electricity market data with estimated solar intensity")
+        st.success(f"✅ Successfully loaded {len(price_df)} 5-minute data points and converted to {len(price_df_30min)} 30-minute intervals")
+        st.write(f"📈 Price range: ${price_df_30min['price'].min():.2f} - ${price_df_30min['price'].max():.2f}/MWh")
+        st.write(f"📊 Average price: ${price_df_30min['price'].mean():.2f}/MWh")
+        st.write(f"📅 Date range: {price_df_30min.index.min()} to {price_df_30min.index.max()}")
+        st.info("💡 Using real QLD electricity market data converted to 30-minute intervals with estimated solar intensity")
         
-        return price_df
+        return price_df_30min
         
     except Exception as e:
         st.error(f"❌ Error parsing market data: {e}")
         return None
+
+def calculate_ideal_merchant_arbitrage(df, battery_size_mw, battery_capacity_mwh, round_trip_efficiency):
+    """
+    Calculate ideal merchant arbitrage by finding the best charge/discharge times for each individual day
+    """
+    if df is None or df.empty:
+        return None
+    
+    # Convert efficiency to decimal
+    efficiency = round_trip_efficiency / 100
+    
+    # Calculate optimal operating hours based on battery capacity
+    optimal_charge_hours = battery_capacity_mwh / battery_size_mw
+    optimal_discharge_hours = optimal_charge_hours * efficiency
+    charge_hours = max(1, round(optimal_charge_hours))
+    discharge_hours = max(1, round(optimal_discharge_hours))
+    
+    # Group by date for daily analysis
+    df['date'] = df.index.date
+    df['hour'] = df.index.hour
+    
+    daily_arbitrage = []
+    
+    for date, day_data in df.groupby('date'):
+        day_data = day_data.sort_index()
+        
+        # Find all possible charge and discharge blocks for this day
+        charge_blocks = []
+        discharge_blocks = []
+        
+        # Get all possible consecutive hour blocks
+        for i in range(24):
+            # Check if we can fit the required hours starting at hour i
+            if i + charge_hours <= 24:  # No wrap-around needed
+                hours = list(range(i, i + charge_hours))
+                prices = [day_data[day_data['hour'] == h]['price'].iloc[0] if len(day_data[day_data['hour'] == h]) > 0 else 0 for h in hours]
+                avg_price = sum(prices) / len(prices)
+                
+                charge_blocks.append({
+                    'start_hour': i,
+                    'end_hour': i + charge_hours - 1,
+                    'hours': charge_hours,
+                    'avg_price': avg_price,
+                    'hour_prices': prices,
+                    'total_energy': battery_size_mw * charge_hours
+                })
+        
+        for i in range(24):
+            if i + discharge_hours <= 24:
+                hours = list(range(i, i + discharge_hours))
+                prices = [day_data[day_data['hour'] == h]['price'].iloc[0] if len(day_data[day_data['hour'] == h]) > 0 else 0 for h in hours]
+                avg_price = sum(prices) / len(prices)
+                
+                discharge_blocks.append({
+                    'start_hour': i,
+                    'end_hour': i + discharge_hours - 1,
+                    'hours': discharge_hours,
+                    'avg_price': avg_price,
+                    'hour_prices': prices,
+                    'total_energy': battery_size_mw * discharge_hours * efficiency
+                })
+        
+        # Find the best charge and discharge blocks for this day
+        if charge_blocks and discharge_blocks:
+            # Sort by price (lowest for charge, highest for discharge)
+            charge_blocks.sort(key=lambda x: x['avg_price'])
+            discharge_blocks.sort(key=lambda x: x['avg_price'], reverse=True)
+            
+            best_charge = charge_blocks[0]
+            best_discharge = discharge_blocks[0]
+            
+            # Calculate profit for this day
+            price_spread = best_discharge['avg_price'] - best_charge['avg_price']
+            energy_transferred = min(best_charge['total_energy'], best_discharge['total_energy'])
+            daily_profit = price_spread * energy_transferred
+            
+            # Format windows
+            charge_window = f"{best_charge['start_hour']:02d}:00-{best_charge['end_hour']:02d}:00"
+            discharge_window = f"{best_discharge['start_hour']:02d}:00-{best_discharge['end_hour']:02d}:00"
+            
+            daily_arbitrage.append({
+                'date': date,
+                'charge_window': charge_window,
+                'discharge_window': discharge_window,
+                'charge_price': best_charge['avg_price'],
+                'discharge_price': best_discharge['avg_price'],
+                'price_spread': price_spread,
+                'energy_transferred': energy_transferred,
+                'daily_profit': daily_profit,
+                'charge_hour_prices': best_charge['hour_prices'],
+                'discharge_hour_prices': best_discharge['hour_prices']
+            })
+    
+    return pd.DataFrame(daily_arbitrage)
 
 def main():
     # Initialize session state for storing data
@@ -480,6 +587,31 @@ def main():
         value=50.0, 
         step=10.0
     )
+    
+    # Battery cost per kWh and contingency buffer
+    st.sidebar.subheader("Battery Cost Inputs")
+    battery_cost_per_kwh = st.sidebar.number_input(
+        "Installed Cost per kWh ($)",
+        min_value=100,
+        max_value=2000,
+        value=550,
+        step=10,
+        help="Base installed cost per kWh of battery capacity"
+    )
+    contingency_percent = st.sidebar.number_input(
+        "Contingency Buffer (%)",
+        min_value=0,
+        max_value=100,
+        value=15,
+        step=1,
+        help="Contingency buffer as a percent of base cost"
+    )
+    
+    # Calculate cost with contingency
+    battery_capacity_kwh = battery_capacity_mwh * 1000
+    base_cost = battery_capacity_kwh * battery_cost_per_kwh
+    contingency_amount = base_cost * (contingency_percent / 100)
+    total_estimated_cost = base_cost + contingency_amount
     
     # Battery unit specifications
     st.sidebar.subheader("Battery Unit Specifications")
@@ -532,9 +664,13 @@ def main():
     actual_power = num_batteries * unit_power_mw
     total_cost = num_batteries * unit_cost_millions
     
+    # Use custom cost per kWh (with contingency) as main investment value
+    investment_dollars = total_estimated_cost  # This is now the main investment value
+    investment_millions = investment_dollars / 1_000_000
+    
     st.sidebar.success(f"🔢 **{num_batteries} units** required")
     st.sidebar.info(f"📊 **Actual System**: {actual_power:.1f} MW / {actual_capacity:.1f} MWh")
-    st.sidebar.warning(f"💰 **Total Cost**: ${total_cost:.1f}M")
+    st.sidebar.warning(f"�� **Total Cost**: ${investment_millions:.1f}M (using custom cost per kWh + contingency)")
     
     # Show cost breakdown
     with st.sidebar.expander("💰 Cost Analysis"):
@@ -542,12 +678,22 @@ def main():
         **Investment Breakdown:**
         - **Units Required**: {num_batteries} {battery_unit_type}
         - **Unit Cost**: ${unit_cost_millions:.2f}M per unit
-        - **Total Investment**: ${total_cost:.1f}M
+        - **Total Investment**: ${investment_millions:.1f}M (using custom cost per kWh + contingency)
         - **Actual Power**: {actual_power:.1f} MW
         - **Actual Capacity**: {actual_capacity:.1f} MWh
         
-        **Cost per MW**: ${total_cost/actual_power:.2f}M/MW
-        **Cost per MWh**: ${total_cost/actual_capacity:.2f}M/MWh
+        **Cost per MW**: ${investment_millions/actual_power:.2f}M/MW
+        **Cost per MWh**: ${investment_millions/actual_capacity:.2f}M/MWh
+        """)
+        st.markdown("---")
+        st.markdown(f"""
+        **Custom Battery Cost Calculation:**
+        - **Battery Size**: {battery_capacity_mwh:,.0f} MWh = {battery_capacity_kwh:,.0f} kWh
+        - **Base Installed Cost**: ${battery_cost_per_kwh:,}/kWh
+        - **Base Cost (no contingency)**: ${base_cost:,.0f}
+        - **Contingency Buffer**: {contingency_percent}%
+        - **Contingency Amount**: ${contingency_amount:,.0f}
+        - **Total Estimated Installed Cost**: ${total_estimated_cost:,.0f}
         """)
     
     round_trip_efficiency = st.sidebar.slider(
@@ -586,7 +732,7 @@ def main():
         uploaded_file = st.sidebar.file_uploader(
             "Choose a CSV file with market data",
             type=['csv'],
-            help="CSV must contain 'date' and 'Price - AUD/MWh' columns"
+            help="CSV must contain 'SETTLEMENTDATE' and 'RRP' columns (5-minute interval data will be converted to 30-minute intervals)"
         )
         st.sidebar.markdown("</div>", unsafe_allow_html=True)
         
@@ -650,7 +796,7 @@ def main():
                             st.session_state.current_results = (results_df, daily_profits)
                             st.rerun()
         else:
-            st.sidebar.info("📁 Please upload a CSV file first")
+            st.sidebar.info("📁 Please upload a CSV file with 'SETTLEMENTDATE' and 'RRP' columns")
     
     else:
         # Simulated data
@@ -744,6 +890,12 @@ def main():
             # Create a sample of the price data for display
             sample_df = df
             
+            # --- Average daily price spread calculation ---
+            price_spread_df = sample_df.copy()
+            price_spread_df['date'] = price_spread_df.index.date
+            daily_spreads = price_spread_df.groupby('date')['price'].agg(lambda x: x.max() - x.min())
+            avg_daily_spread = daily_spreads.mean() if not daily_spreads.empty else 0
+            
             # Format for display
             display_price_df = sample_df.reset_index()
             display_price_df['timestamp'] = display_price_df['timestamp'].dt.strftime('%Y-%m-%d %H:%M')
@@ -754,13 +906,15 @@ def main():
             display_price_df.columns = ['Timestamp', 'Price ($/MWh)']
             
             # Show price statistics
-            col1, col2, col3 = st.columns(3)
+            col1, col2, col3, col4 = st.columns(4)
             with col1:
                 st.metric("Min Price", f"${df['price'].min():.2f}/MWh")
             with col2:
                 st.metric("Max Price", f"${df['price'].max():.2f}/MWh")
             with col3:
                 st.metric("Avg Price", f"${df['price'].mean():.2f}/MWh")
+            with col4:
+                st.metric("Avg Daily Price Spread", f"${avg_daily_spread:.2f}/MWh")
             
             # Price chart
             fig_price = px.line(
@@ -906,7 +1060,7 @@ def main():
             
             # Calculate ROI and payback period (will be calculated later with correct investment amount)
             annual_profit = total_profit * (365 / len(results_df))  # Extrapolate to annual
-            total_investment_dollars = total_cost * 1_000_000  # Convert from millions to dollars
+            total_investment_dollars = investment_dollars  # Use custom cost per kWh + contingency
             roi_percentage = (annual_profit / total_investment_dollars) * 100 if total_investment_dollars > 0 else 0
             payback_years = total_investment_dollars / annual_profit if annual_profit > 0 else float('inf')
             
@@ -981,27 +1135,33 @@ def main():
                 st.metric("Total Investment", f"${total_investment_dollars:,.0f}")
             
             with col3:
-                st.metric("Investment Efficiency", f"${total_cost/actual_power:.2f}M/MW")
+                st.metric("Investment Efficiency", f"${investment_millions/actual_power:.2f}M/MW")
             
             # ROI breakdown
             roi_data = {
                 'Metric': [
-                    'Total Investment Cost',
+                    'Total Investment Cost (Custom kWh + Contingency)',
                     'Annualized Profit',
                     'ROI (%)',
                     'Payback Period (Years)',
                     'Daily Profit Average',
                     'Profit per MW per Day',
-                    'Profit per MWh per Day'
+                    'Profit per MWh per Day',
+                    'Custom Battery Base Cost',
+                    'Contingency Amount',
+                    'Total Estimated Installed Cost'
                 ],
                 'Value': [
-                    f"${total_cost:.1f}M",
+                    f"${investment_millions:.1f}M",
                     f"${annual_profit:,.0f}",
                     f"{roi_percentage:.1f}%",
                     f"{payback_years:.1f} years" if payback_years != float('inf') else "Never",
                     f"${avg_daily_profit:,.0f}",
                     f"${avg_daily_profit/actual_power:.0f}",
-                    f"${avg_daily_profit/actual_capacity:.0f}"
+                    f"${avg_daily_profit/actual_capacity:.0f}",
+                    f"${base_cost:,.0f}",
+                    f"${contingency_amount:,.0f}",
+                    f"${total_estimated_cost:,.0f}"
                 ]
             }
             
@@ -1027,7 +1187,7 @@ def main():
                     'Total Charge Cost',
                     'Total Discharge Revenue',
                     'Annualized Profit',
-                    'Total Investment Cost',
+                    'Total Investment Cost (Custom kWh + Contingency)',
                     'ROI (%)',
                     'Payback Period (Years)'
                 ],
@@ -1040,7 +1200,7 @@ def main():
                     f"${results_df['charge_cost'].sum():.0f}",
                     f"${results_df['discharge_revenue'].sum():.0f}",
                     f"${annual_profit:.0f}",
-                    f"${total_investment_dollars:,.0f}",
+                    f"${investment_millions:.1f}M",
                     f"{roi_percentage:.1f}%",
                     f"{payback_years:.1f}" if payback_years != float('inf') else "Never"
                 ]
@@ -1129,7 +1289,7 @@ def main():
                         'Discharge Window',
                         'Data Source',
                         'Analysis Period',
-                        'Total Investment Cost',
+                        'Total Investment Cost (Custom kWh + Contingency)',
                         'Annualized Profit',
                         'ROI (%)',
                         'Payback Period (Years)'
@@ -1145,7 +1305,7 @@ def main():
                         f"{discharge_start}:00 - {discharge_end}:00",
                         "Real Market Data (CSV)",
                         f"{st.session_state.current_start_date} to {st.session_state.current_end_date}",
-                        f"${total_cost:.1f}M",
+                        f"${investment_millions:.1f}M",
                         f"${annual_profit:,.0f}",
                         f"{roi_percentage:.1f}%",
                         f"{payback_years:.1f} years" if payback_years != float('inf') else "Never"
@@ -1181,6 +1341,9 @@ def main():
             
             # Get recommendations
             recommendations = recommend_optimal_windows(df, battery_size_mw, battery_capacity_mwh, round_trip_efficiency)
+            
+            # Calculate ideal merchant arbitrage
+            ideal_arbitrage_df = calculate_ideal_merchant_arbitrage(df, battery_size_mw, battery_capacity_mwh, round_trip_efficiency)
             
             if recommendations:
                 # Show hourly price analysis
@@ -1231,9 +1394,11 @@ def main():
                 if charge_blocks:
                     charge_data = []
                     for i, block in enumerate(charge_blocks, 1):
+                        # Calculate proper end time for display
+                        end_hour_display = (int(block['start_hour']) + block['hours']) % 24
                         charge_data.append({
                             'Rank': i,
-                            'Window': f"{int(block['start_hour']):02d}:00-{int(block['end_hour']):02d}:00",
+                            'Window': f"{int(block['start_hour']):02d}:00-{end_hour_display:02d}:00",
                             'Hours': block['hours'],
                             'Avg Price ($/MWh)': f"${block['avg_price']:.2f}",
                             'Energy Stored (MWh)': f"{block['total_energy']:.1f}",
@@ -1249,9 +1414,11 @@ def main():
                 if discharge_blocks:
                     discharge_data = []
                     for i, block in enumerate(discharge_blocks, 1):
+                        # Calculate proper end time for display
+                        end_hour_display = (int(block['start_hour']) + block['hours']) % 24
                         discharge_data.append({
                             'Rank': i,
-                            'Window': f"{int(block['start_hour']):02d}:00-{int(block['end_hour']):02d}:00",
+                            'Window': f"{int(block['start_hour']):02d}:00-{end_hour_display:02d}:00",
                             'Hours': block['hours'],
                             'Avg Price ($/MWh)': f"${block['avg_price']:.2f}",
                             'Energy Discharged (MWh)': f"{block['total_energy']:.1f}",
@@ -1336,6 +1503,88 @@ def main():
                     - Suitable for forward contract negotiations
                     - Adapts to duck curve dynamics
                     - **Battery starts at 0 capacity** for each daily cycle
+                    """)
+            
+            # Ideal Merchant Arbitrage Section
+            if ideal_arbitrage_df is not None and not ideal_arbitrage_df.empty:
+                st.markdown("### 🎯 Ideal Merchant Arbitrage (Daily Optimal)")
+                
+                # Calculate summary statistics
+                total_ideal_profit = ideal_arbitrage_df['daily_profit'].sum()
+                avg_ideal_profit = ideal_arbitrage_df['daily_profit'].mean()
+                avg_price_spread = ideal_arbitrage_df['price_spread'].mean()
+                total_energy_arbitraged = ideal_arbitrage_df['energy_transferred'].sum()
+                
+                # Summary metrics
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("Total Ideal Profit", f"${total_ideal_profit:,.0f}")
+                with col2:
+                    st.metric("Avg Daily Ideal Profit", f"${avg_ideal_profit:,.0f}")
+                with col3:
+                    st.metric("Avg Price Spread", f"${avg_price_spread:.2f}/MWh")
+                with col4:
+                    st.metric("Total Energy Arbitraged", f"{total_energy_arbitraged:.1f} MWh")
+                
+                # Show daily breakdown
+                st.markdown("#### 📊 Daily Ideal Arbitrage Breakdown")
+                
+                # Format the dataframe for display
+                display_ideal_df = ideal_arbitrage_df.copy()
+                display_ideal_df['date'] = display_ideal_df['date'].astype(str)
+                display_ideal_df['charge_price'] = display_ideal_df['charge_price'].round(2)
+                display_ideal_df['discharge_price'] = display_ideal_df['discharge_price'].round(2)
+                display_ideal_df['price_spread'] = display_ideal_df['price_spread'].round(2)
+                display_ideal_df['daily_profit'] = display_ideal_df['daily_profit'].round(2)
+                display_ideal_df['energy_transferred'] = display_ideal_df['energy_transferred'].round(1)
+                
+                # Rename columns for display
+                display_ideal_df.columns = ['Date', 'Charge Window', 'Discharge Window', 
+                                         'Charge Price ($/MWh)', 'Discharge Price ($/MWh)',
+                                         'Price Spread ($/MWh)', 'Energy Transferred (MWh)',
+                                         'Daily Profit ($)', 'Charge Hour Prices', 'Discharge Hour Prices']
+                
+                st.dataframe(display_ideal_df, use_container_width=True)
+                
+                # Show explanation
+                with st.expander("ℹ️ Ideal Merchant Arbitrage Explanation"):
+                    st.markdown(f"""
+                    **Ideal Merchant Arbitrage Analysis:**
+                    
+                    This analysis shows what the profit would be if the battery operated at the **optimal times every single day** of the month, rather than using average monthly prices.
+                    
+                    **Key Differences from OTC Recommendations:**
+                    - **OTC**: Uses average monthly prices to find best overall windows
+                    - **Ideal Merchant**: Finds the best charge/discharge times for each individual day
+                    
+                    **Daily Optimization Process:**
+                    1. **For each day**: Analyze all possible {recommendations['optimal_charge_hours']}-hour charge blocks
+                    2. **Find lowest price**: Select the charge block with lowest average price
+                    3. **Find highest price**: Select the discharge block with highest average price
+                    4. **Calculate profit**: (Discharge Price - Charge Price) × Energy Transferred
+                    5. **Sum daily profits**: Total ideal profit for the month
+                    
+                    **Battery Specifications Used:**
+                    - **Power**: {battery_size_mw} MW
+                    - **Capacity**: {battery_capacity_mwh} MWh
+                    - **Charge Hours**: {recommendations['optimal_charge_hours']} hours (to reach full capacity)
+                    - **Discharge Hours**: {recommendations['optimal_discharge_hours']} hours (accounting for efficiency)
+                    - **Efficiency**: {round_trip_efficiency}%
+                    
+                    **Realistic Expectations:**
+                    - This represents the **maximum possible profit** if you could perfectly predict and operate at optimal times
+                    - Actual merchant arbitrage would be lower due to:
+                        - Market uncertainty and price volatility
+                        - Operational constraints and ramp rates
+                        - Network congestion and transmission limits
+                        - Battery degradation over time
+                        - Market fees and transaction costs
+                    
+                    **Use Cases:**
+                    - **Theoretical maximum**: What's possible with perfect foresight
+                    - **Benchmark**: Compare against actual merchant performance
+                    - **Strategy validation**: Verify arbitrage opportunities exist
+                    - **Risk assessment**: Understand profit potential vs. operational risks
                     """)
     
     # Instructions (always show when no simulation has been run)
@@ -1568,16 +1817,16 @@ def main():
         
         **Required CSV Format**:
         ```csv
-        date,Price - AUD/MWh,other_columns...
-        2025-07-16 10:30,-0.01,...
-        2025-07-16 11:00,-12.28,...
+        REGION,SETTLEMENTDATE,TOTALDEMAND,RRP,PERIODTYPE
+        QLD1,2024/01/01 00:05:00,6228.31,65.49,TRADE
+        QLD1,2024/01/01 00:10:00,6225.45,79.41,TRADE
         ```
         
         **Data Requirements**:
-        - **Range**: Must be exactly 7 days
-        - **Interval**: Must be 30 minutes
-        - **Required Columns**: `date`, `Price - AUD/MWh`
-        - **Date Format**: YYYY-MM-DD HH:MM
+        - **Range**: Any period (will be converted to 30-minute intervals)
+        - **Interval**: 5-minute intervals (automatically converted to 30-minute)
+        - **Required Columns**: `SETTLEMENTDATE`, `RRP` (Regional Reference Price)
+        - **Date Format**: YYYY/MM/DD HH:MM:SS
         - **Price Format**: Numeric values in AUD/MWh
         
         **Real Market Data Processing**:
@@ -1586,17 +1835,22 @@ def main():
         ```python
         # Read CSV and extract price data
         df = pd.read_csv(uploaded_file)
-        price_df = df[['timestamp', 'Price - AUD/MWh']].copy()
+        df['timestamp'] = pd.to_datetime(df['SETTLEMENTDATE'])
+        price_df = df[['timestamp', 'RRP']].copy()
         price_df.columns = ['timestamp', 'price']
         price_df.set_index('timestamp', inplace=True)
+        
+        # Convert 5-minute intervals to 30-minute intervals
+        price_df_30min = price_df.resample('30T').mean()
+        price_df_30min = price_df_30min.dropna()
         ```
         
         **Price Statistics Calculation**:
         ```python
-        # Calculated on ALL uploaded data points (336 for 7 days)
-        Min Price = df['price'].min()  # Actual lowest price in dataset
-        Max Price = df['price'].max()  # Actual highest price in dataset
-        Avg Price = df['price'].mean() # Actual average of all prices
+        # Calculated on converted 30-minute interval data
+        Min Price = price_df_30min['price'].min()  # Actual lowest price in dataset
+        Max Price = price_df_30min['price'].max()  # Actual highest price in dataset
+        Avg Price = price_df_30min['price'].mean() # Actual average of all prices
         ```
         
         **Solar Intensity Estimation** (for real data):
@@ -1649,14 +1903,27 @@ def main():
         
         **Example Real Market Analysis**:
         ```
-        Uploaded Data: 7-day QLD market data (336 points)
-        Min Price: -$16.43/MWh (actual solar crash period)
+        Uploaded Data: QLD market data (5-minute intervals converted to 30-minute)
+        Min Price: -$10.50/MWh (actual solar crash period)
         Max Price: $288.80/MWh (actual evening peak)
         Avg Price: $95.23/MWh (actual market average)
-        Analysis Period: 2025-07-16 to 2025-07-22
+        Analysis Period: Based on uploaded data range
         OTC Recommendations: Based on actual price patterns
         ```
         """)
 
-if __name__ == "__main__":
-    main() 
+# Add page navigation
+if 'page' not in st.session_state:
+    st.session_state.page = 'Battery Arbitrage Analysis'
+
+page = st.sidebar.radio('Select Page:', ['Battery Arbitrage Analysis', 'Simple Payback Calculator'], index=0)
+
+def simple_payback_calculator():
+    st.title('Simple Payback Calculator')
+    st.info('This page is under construction.')
+
+# Main page logic
+if page == 'Battery Arbitrage Analysis':
+    main()
+elif page == 'Simple Payback Calculator':
+    simple_payback_calculator() 
